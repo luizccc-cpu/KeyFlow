@@ -24,3 +24,4 @@ piano_transcription_inference
 pypdfium2
 Pillow
 music21
+homr

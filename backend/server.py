@@ -40,9 +40,11 @@ import tempfile
 import threading
 import time
 import urllib.request
+import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
+from xml.sax.saxutils import escape as xml_escape
 
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MB limit
 ALLOWED_SUFFIXES = {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac", ".webm", ".mp4"}
@@ -111,7 +113,7 @@ def _installed_versions() -> Dict[str, Any]:
     """Returns installed distribution versions (None if not installed), independent of import success."""
     out: Dict[str, Any] = {"python": sys.version.split()[0]}
     for dist in ("numpy", "torch", "torchaudio", "audio-separator", "onnxruntime-gpu",
-                 "onnxruntime", "transkun", "demucs", "piano_transcription_inference", "librosa", "audioread", "setuptools"):
+                 "onnxruntime", "transkun", "demucs", "piano_transcription_inference", "librosa", "audioread", "setuptools", "homr"):
         try:
             out[dist] = importlib.metadata.version(dist)
         except Exception:
@@ -177,6 +179,23 @@ except Exception:
 if not HAS_TRANSKUN and shutil.which("transkun") is not None:
     HAS_TRANSKUN = True
     TRANSKUN_CMD = ["transkun"]
+
+HAS_HOMR = False
+HOMR_CMD: List[str] = []
+
+if shutil.which("homr") is not None:
+    HAS_HOMR = True
+    HOMR_CMD = ["homr"]
+else:
+    try:
+        if importlib.util.find_spec("homr") is not None:
+            HAS_HOMR = True
+            HOMR_CMD = [sys.executable, "-m", "homr.main"]
+    except Exception as _exc:
+        IMPORT_ERRORS["homr"] = f"{type(_exc).__name__}: {_exc}"[:500]
+
+HAS_AUDIVERIS = shutil.which("audiveris") is not None
+HAS_OEMER = shutil.which("oemer") is not None
 
 # BS-RoFormer SW 6-stem model (BS-Roformer-SW.ckpt with BS-Roformer-SW.yaml), extracting ['bass', 'drums', 'other', 'vocals', 'guitar', 'piano']
 PIANO_SEPARATOR_MODEL = os.environ.get("KEYFLOW_SEPARATOR_MODEL", "BS-Roformer-SW.ckpt")
@@ -279,6 +298,10 @@ def get_available_engines() -> List[str]:
         engines.append("Basic-Pitch")
     if HAS_LIBROSA:
         engines.append("Librosa-CQT")
+    if HAS_HOMR:
+        engines.append("HOMR")
+    if HAS_AUDIVERIS:
+        engines.append("Audiveris")
     engines.append("Sheet-OMR")
     return engines
 
@@ -1420,6 +1443,422 @@ def extract_musicxml_text_from_mxl(mxl_bytes: bytes) -> str:
         return z.read(candidates[0]).decode("utf-8", errors="ignore")
 
 
+def merge_musicxml_pages(xml_pages: List[str]) -> str:
+    """Merges multiple single-page MusicXML strings into a single continuous multi-measure score."""
+    valid_pages = [x.strip() for x in xml_pages if x and "<score-partwise" in x]
+    if not valid_pages:
+        return xml_pages[0] if xml_pages else ""
+    if len(valid_pages) == 1:
+        return valid_pages[0]
+
+    try:
+        base_root = ET.fromstring(valid_pages[0])
+        base_parts = base_root.findall("part")
+        if not base_parts:
+            return valid_pages[0]
+
+        measure_counters = [len(p.findall("measure")) for p in base_parts]
+
+        for page_xml in valid_pages[1:]:
+            try:
+                page_root = ET.fromstring(page_xml)
+                page_parts = page_root.findall("part")
+                for p_idx, base_part in enumerate(base_parts):
+                    if p_idx >= len(page_parts):
+                        break
+                    for m_el in page_parts[p_idx].findall("measure"):
+                        measure_counters[p_idx] += 1
+                        m_el.set("number", str(measure_counters[p_idx]))
+                        base_part.append(m_el)
+            except Exception:
+                continue
+
+        return ET.tostring(base_root, encoding="unicode", xml_declaration=True)
+    except Exception:
+        return valid_pages[0]
+
+
+def transcribe_sheet_with_homr(image_paths: List[Path], work_dir: Path) -> Optional[str]:
+    """
+    Runs deep-learning Optical Music Recognition via `homr` on one or more page images
+    and returns the resulting MusicXML string (or None on failure).
+    """
+    if not HAS_HOMR or not HOMR_CMD or not image_paths:
+        return None
+
+    try:
+        cmd = list(HOMR_CMD) + [str(p) for p in image_paths]
+        subprocess.run(
+            cmd,
+            cwd=str(work_dir),
+            check=True,
+            capture_output=True,
+            timeout=240,
+        )
+
+        # 1. Check for homr's native multi-page merged output first
+        first_stem = image_paths[0].stem
+        merged_cand = work_dir / f"merged_{first_stem}.musicxml"
+        if merged_cand.exists() and merged_cand.stat().st_size > 100:
+            return merged_cand.read_text(encoding="utf-8", errors="ignore")
+
+        # 2. Otherwise collect per-page .musicxml files in page order
+        page_xmls: List[str] = []
+        for img_p in image_paths:
+            for ext in (".musicxml", ".xml"):
+                cand = img_p.with_suffix(ext)
+                if cand.exists() and cand.stat().st_size > 100:
+                    page_xmls.append(cand.read_text(encoding="utf-8", errors="ignore"))
+                    break
+
+        if page_xmls:
+            return merge_musicxml_pages(page_xmls)
+
+        # 3. Fallback scan for any .musicxml or .mxl generated in work_dir
+        for f_path in sorted(work_dir.glob("*.musicxml")):
+            if f_path.stat().st_size > 100:
+                page_xmls.append(f_path.read_text(encoding="utf-8", errors="ignore"))
+        if page_xmls:
+            return merge_musicxml_pages(page_xmls)
+
+        for mxl_path in sorted(work_dir.glob("*.mxl")):
+            if mxl_path.stat().st_size > 100:
+                return extract_musicxml_text_from_mxl(mxl_path.read_bytes())
+
+    except subprocess.CalledProcessError as exc:
+        err_msg = (exc.stderr.decode("utf-8", errors="replace") if exc.stderr else str(exc))[-1000:]
+        print(f"[KeyFlow OMR] homr failed: {err_msg}")
+    except Exception as exc:
+        print(f"[KeyFlow OMR] homr error: {str(exc)[:500]}")
+    return None
+
+
+def transcribe_sheet_with_cli_omr(
+    input_path: Path,
+    image_paths: List[Path],
+    work_dir: Path,
+) -> Tuple[Optional[str], str]:
+    """Tries Audiveris or oemer CLI if installed on PATH. Returns (musicxml_or_none, engine_name)."""
+    if HAS_AUDIVERIS:
+        try:
+            out_dir = work_dir / "audiveris_out"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            cmd = ["audiveris", "-batch", "-export", "-output", str(out_dir), str(input_path)]
+            subprocess.run(cmd, check=True, capture_output=True, timeout=240)
+            mxl_files = sorted(out_dir.rglob("*.mxl"))
+            if mxl_files:
+                xml_pages = [extract_musicxml_text_from_mxl(p.read_bytes()) for p in mxl_files]
+                return merge_musicxml_pages(xml_pages), "audiveris"
+            xml_files = sorted(out_dir.rglob("*.musicxml")) + sorted(out_dir.rglob("*.xml"))
+            if xml_files:
+                xml_pages = [p.read_text(encoding="utf-8", errors="ignore") for p in xml_files]
+                return merge_musicxml_pages(xml_pages), "audiveris"
+        except Exception as exc:
+            print(f"[KeyFlow OMR] Audiveris fallback error: {exc}")
+
+    if HAS_OEMER and image_paths:
+        try:
+            out_dir = work_dir / "oemer_out"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            xml_pages = []
+            for img_p in image_paths:
+                cmd = ["oemer", "-o", str(out_dir), str(img_p)]
+                subprocess.run(cmd, check=True, capture_output=True, timeout=240)
+                for cand in sorted(out_dir.glob(f"{img_p.stem}*.musicxml")):
+                    if cand.stat().st_size > 100:
+                        xml_pages.append(cand.read_text(encoding="utf-8", errors="ignore"))
+            if xml_pages:
+                return merge_musicxml_pages(xml_pages), "oemer"
+        except Exception as exc:
+            print(f"[KeyFlow OMR] oemer fallback error: {exc}")
+
+    return None, "none"
+
+
+def transcribe_sheet_image_cv_to_musicxml(
+    image_paths: List[Path],
+    title: str = "Sheet Music",
+) -> Optional[str]:
+    """
+    Rhythm- and Grand-Staff-aware CV fallback OMR that detects 5-line staves,
+    hollow vs. filled noteheads, and chord clusters, emitting a valid 2-staff
+    Grand Staff MusicXML document (<score-partwise version="3.1">).
+    """
+    if not HAS_PIL or not HAS_NDI or not image_paths:
+        return None
+
+    NOTE_STEPS = [
+        ("C", 0), ("C", 1), ("D", 0), ("D", 1), ("E", 0), ("F", 0),
+        ("F", 1), ("G", 0), ("G", 1), ("A", 0), ("A", 1), ("B", 0),
+    ]
+    DIVISIONS = 4
+    MEASURE_TICKS = 16  # 4/4 time
+
+    def _midi_to_xml_pitch(midi: int) -> str:
+        m = int(np.clip(midi, 21, 108))
+        step, alter = NOTE_STEPS[m % 12]
+        octave = (m // 12) - 1
+        alter_xml = f"<alter>{alter}</alter>" if alter else ""
+        return f"<pitch><step>{step}</step>{alter_xml}<octave>{octave}</octave></pitch>"
+
+    def _ticks_to_type(ticks: int) -> str:
+        if ticks >= 8:
+            return "half"
+        if ticks >= 4:
+            return "quarter"
+        return "eighth"
+
+    measures: List[Tuple[List[Tuple[int, int, bool]], List[Tuple[int, int, bool]]]] = []
+
+    for img_path in image_paths:
+        try:
+            with Image.open(str(img_path)) as pil_img:
+                gray = pil_img.convert("L")
+                w, h = gray.size
+                if w < 100 or h < 100:
+                    continue
+                if w > 2400:
+                    scale = 2400.0 / w
+                    gray = gray.resize((2400, int(round(h * scale))), Image.Resampling.BILINEAR)
+                    w, h = gray.size
+                img_arr = np.array(gray)
+        except Exception:
+            continue
+
+        thresh = float(np.mean(img_arr)) * 0.85
+        binary = (img_arr < thresh).astype(np.uint8)
+
+        h_proj = np.sum(binary, axis=1)
+        line_thresh = max(int(w * 0.22), int(np.percentile(h_proj, 88)))
+
+        line_ys: List[int] = []
+        in_run = False
+        run_start = 0
+        for y in range(h):
+            if h_proj[y] >= line_thresh:
+                if not in_run:
+                    in_run = True
+                    run_start = y
+            elif in_run:
+                in_run = False
+                line_ys.append(int(round((run_start + y - 1) / 2.0)))
+        if in_run:
+            line_ys.append(int(round((run_start + h - 1) / 2.0)))
+
+        if len(line_ys) < 5:
+            continue
+
+        detected_staves = []
+        i = 0
+        while i <= len(line_ys) - 5:
+            spacings = [line_ys[i + j + 1] - line_ys[i + j] for j in range(4)]
+            avg_d = float(np.mean(spacings))
+            std_d = float(np.std(spacings))
+            if 6.0 <= avg_d <= 45.0 and std_d <= 3.5:
+                staff_lines = line_ys[i:i + 5]
+                detected_staves.append({
+                    "lines": staff_lines,
+                    "top": staff_lines[0],
+                    "bottom": staff_lines[4],
+                    "d": avg_d,
+                    "center": float(np.mean(staff_lines)),
+                })
+                i += 5
+            else:
+                i += 1
+
+        if not detected_staves:
+            continue
+
+        grand_staves = []
+        s_idx = 0
+        while s_idx < len(detected_staves):
+            st1 = detected_staves[s_idx]
+            if s_idx + 1 < len(detected_staves):
+                st2 = detected_staves[s_idx + 1]
+                gap = st2["top"] - st1["bottom"]
+                if 1.5 * st1["d"] <= gap <= 10.0 * st1["d"]:
+                    grand_staves.append({"treble": st1, "bass": st2, "d": (st1["d"] + st2["d"]) / 2.0})
+                    s_idx += 2
+                    continue
+            grand_staves.append({"treble": st1, "bass": None, "d": st1["d"]})
+            s_idx += 1
+
+        typical_d = int(round(np.median([gs["d"] for gs in grand_staves])))
+        v_kernel_h = max(3, int(round(typical_d * 0.55)))
+        v_kernel = np.ones((v_kernel_h, 1), dtype=np.uint8)
+        note_mask = ndi.binary_opening(binary, structure=v_kernel)
+
+        labeled, _ = ndi.label(note_mask)
+        objects = ndi.find_objects(labeled)
+
+        for gs in grand_staves:
+            d = gs["d"]
+            treble = gs["treble"]
+            bass = gs["bass"]
+            min_y = treble["top"] - int(d * 4.0)
+            max_y = (bass["bottom"] if bass else treble["bottom"]) + int(d * 4.0)
+            x_start_margin = int(w * 0.08)
+            x_end_margin = int(w * 0.96)
+
+            sys_events: List[Dict[str, Any]] = []
+            for sl_y, sl_x in objects:
+                if sl_y is None or sl_x is None:
+                    continue
+                y_min, y_max = sl_y.start, sl_y.stop
+                x_min, x_max = sl_x.start, sl_x.stop
+                yc = (y_min + y_max) / 2.0
+                xc = (x_min + x_max) / 2.0
+                if not (min_y <= yc <= max_y and x_start_margin <= xc <= x_end_margin):
+                    continue
+
+                blob_h = y_max - y_min
+                blob_w = x_max - x_min
+                if not (0.55 * d <= blob_h <= 1.9 * d and 0.55 * d <= blob_w <= 2.6 * d):
+                    continue
+                if not (0.35 <= (blob_w / max(1.0, blob_h)) <= 3.2):
+                    continue
+
+                # Inspect inner core (35%..65%) to classify hollow vs. filled notehead
+                iy0 = y_min + int(round(blob_h * 0.35))
+                iy1 = max(iy0 + 1, y_min + int(round(blob_h * 0.65)))
+                ix0 = x_min + int(round(blob_w * 0.35))
+                ix1 = max(ix0 + 1, x_min + int(round(blob_w * 0.65)))
+                inner_core = binary[iy0:iy1, ix0:ix1]
+                is_hollow = bool(inner_core.size > 0 and float(np.mean(inner_core)) < 0.45)
+
+                staff_num = 1
+                if bass is not None and abs(yc - bass["center"]) < abs(yc - treble["center"]):
+                    staff_num = 2
+
+                if staff_num == 1:
+                    step_offset = int(round((treble["bottom"] - yc) / (d / 2.0)))
+                    midi = diatonic_step_to_midi(base_step_in_c=2, base_octave=4, step_offset=step_offset)
+                else:
+                    ref_bottom = bass["bottom"] if bass else treble["bottom"]
+                    step_offset = int(round((ref_bottom - yc) / (d / 2.0)))
+                    midi = diatonic_step_to_midi(base_step_in_c=4, base_octave=2, step_offset=step_offset)
+
+                sys_events.append({
+                    "xc": float(xc),
+                    "midi": midi,
+                    "staff": staff_num,
+                    "hollow": is_hollow,
+                })
+
+            if not sys_events:
+                continue
+
+            sys_events.sort(key=lambda e: (e["xc"], e["staff"], e["midi"]))
+
+            # Group into horizontal onset clusters (within 0.6 * d)
+            clusters: List[List[Dict[str, Any]]] = []
+            cur_c = [sys_events[0]]
+            for ev in sys_events[1:]:
+                if abs(ev["xc"] - cur_c[0]["xc"]) <= max(4.0, d * 0.6):
+                    cur_c.append(ev)
+                else:
+                    clusters.append(cur_c)
+                    cur_c = [ev]
+            clusters.append(cur_c)
+
+            cur_t_notes: List[Tuple[int, int, bool]] = []
+            cur_b_notes: List[Tuple[int, int, bool]] = []
+            cur_ticks = 0
+
+            for c_idx, cluster in enumerate(clusters):
+                has_hollow = any(ev["hollow"] for ev in cluster)
+                if has_hollow:
+                    dur_ticks = 8
+                elif c_idx + 1 < len(clusters) and (clusters[c_idx + 1][0]["xc"] - cluster[0]["xc"]) < (d * 2.3):
+                    dur_ticks = 2
+                else:
+                    dur_ticks = 4
+
+                if cur_ticks + dur_ticks > MEASURE_TICKS and (cur_t_notes or cur_b_notes):
+                    measures.append((cur_t_notes, cur_b_notes))
+                    cur_t_notes = []
+                    cur_b_notes = []
+                    cur_ticks = 0
+
+                t_first = True
+                b_first = True
+                for ev in cluster:
+                    if ev["staff"] == 1:
+                        cur_t_notes.append((ev["midi"], dur_ticks, not t_first))
+                        t_first = False
+                    else:
+                        cur_b_notes.append((ev["midi"], dur_ticks, not b_first))
+                        b_first = False
+                if t_first:
+                    cur_t_notes.append((-1, dur_ticks, False))
+                if b_first:
+                    cur_b_notes.append((-1, dur_ticks, False))
+                cur_ticks += dur_ticks
+
+            if cur_t_notes or cur_b_notes:
+                measures.append((cur_t_notes, cur_b_notes))
+
+    if not measures:
+        return None
+
+    safe_title = xml_escape(title or "Sheet Music")
+    lines = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<score-partwise version="3.1">',
+        f'  <work><work-title>{safe_title}</work-title></work>',
+        '  <part-list><score-part id="P1"><part-name>Piano</part-name></score-part></part-list>',
+        '  <part id="P1">',
+    ]
+
+    for m_num, (t_notes, b_notes) in enumerate(measures, start=1):
+        lines.append(f'    <measure number="{m_num}">')
+        if m_num == 1:
+            lines.append('      <attributes>')
+            lines.append(f'        <divisions>{DIVISIONS}</divisions>')
+            lines.append('        <key><fifths>0</fifths></key>')
+            lines.append('        <time><beats>4</beats><beat-type>4</beat-type></time>')
+            lines.append('        <staves>2</staves>')
+            lines.append('        <clef number="1"><sign>G</sign><line>2</line></clef>')
+            lines.append('        <clef number="2"><sign>F</sign><line>4</line></clef>')
+            lines.append('      </attributes>')
+            lines.append('      <direction placement="above"><sound tempo="110"/></direction>')
+
+        t_used = 0
+        for midi, dur, is_chord in t_notes:
+            if not is_chord:
+                t_used += dur
+            if midi < 0:
+                lines.append(f'      <note><rest/><duration>{dur}</duration><voice>1</voice><type>{_ticks_to_type(dur)}</type><staff>1</staff></note>')
+            else:
+                chord_tag = "<chord/>" if is_chord else ""
+                lines.append(f'      <note>{chord_tag}{_midi_to_xml_pitch(midi)}<duration>{dur}</duration><voice>1</voice><type>{_ticks_to_type(dur)}</type><staff>1</staff></note>')
+        if t_used < MEASURE_TICKS:
+            rem = MEASURE_TICKS - t_used
+            lines.append(f'      <note><rest/><duration>{rem}</duration><voice>1</voice><staff>1</staff></note>')
+
+        lines.append(f'      <backup><duration>{MEASURE_TICKS}</duration></backup>')
+
+        b_used = 0
+        for midi, dur, is_chord in b_notes:
+            if not is_chord:
+                b_used += dur
+            if midi < 0:
+                lines.append(f'      <note><rest/><duration>{dur}</duration><voice>2</voice><type>{_ticks_to_type(dur)}</type><staff>2</staff></note>')
+            else:
+                chord_tag = "<chord/>" if is_chord else ""
+                lines.append(f'      <note>{chord_tag}{_midi_to_xml_pitch(midi)}<duration>{dur}</duration><voice>2</voice><type>{_ticks_to_type(dur)}</type><staff>2</staff></note>')
+        if b_used < MEASURE_TICKS:
+            rem = MEASURE_TICKS - b_used
+            lines.append(f'      <note><rest/><duration>{rem}</duration><voice>2</voice><staff>2</staff></note>')
+
+        lines.append('    </measure>')
+
+    lines.append('  </part>')
+    lines.append('</score-partwise>')
+    return "\n".join(lines)
+
+
 @app.post("/api/omr")
 async def omr_endpoint(file: UploadFile = File(...)) -> Dict[str, Any]:
     """
@@ -1458,8 +1897,8 @@ async def omr_endpoint(file: UploadFile = File(...)) -> Dict[str, Any]:
         except Exception as exc:
             raise HTTPException(status_code=422, detail=f"Could not unpack .mxl archive: {exc}")
 
-    # 2. Visual scans (.pdf, .png, .jpg, .jpeg, .webp): run OMR pipeline
-    def _sync_omr() -> str:
+    # 2. Visual scans (.pdf, .png, .jpg, .jpeg, .webp): run 3-tier OMR pipeline
+    def _sync_omr() -> Dict[str, Any]:
         os.makedirs("/tmp", exist_ok=True)
         with tempfile.TemporaryDirectory(dir="/tmp", prefix="keyflow_omr_") as tmp_dir:
             work_dir = Path(tmp_dir)
@@ -1475,24 +1914,44 @@ async def omr_endpoint(file: UploadFile = File(...)) -> Dict[str, Any]:
             if not image_paths:
                 raise RuntimeError("No rendered pages available for OMR processing.")
 
+            # Tier 1: homr (deep-learning MusicXML OMR)
+            xml_text = transcribe_sheet_with_homr(image_paths, work_dir)
+            omr_engine = "homr"
+
+            # Tier 2: Audiveris / oemer CLI
+            if not xml_text:
+                xml_text, omr_engine = transcribe_sheet_with_cli_omr(input_path, image_paths, work_dir)
+
+            # Tier 3: Rhythm- & Grand-Staff-aware CV-to-MusicXML fallback
+            if not xml_text:
+                xml_text = transcribe_sheet_image_cv_to_musicxml(image_paths, title=clean_title)
+                omr_engine = "cv-musicxml"
+
+            if xml_text and xml_text.strip():
+                return {
+                    "musicxml": xml_text,
+                    "title": clean_title,
+                    "omr_engine": omr_engine,
+                }
+
+            # Final safety net: legacy CV-to-MIDI
             output_midi = work_dir / "transcribed_sheet.mid"
             ok = transcribe_sheet_image_cv_to_midi(image_paths, output_midi)
             if not ok or not output_midi.exists():
                 raise RuntimeError("No readable piano staves or noteheads detected in sheet music image.")
 
-            return base64.b64encode(output_midi.read_bytes()).decode("ascii")
+            return {
+                "midi_base64": base64.b64encode(output_midi.read_bytes()).decode("ascii"),
+                "title": clean_title,
+                "omr_engine": "cv-midi",
+            }
 
     try:
-        b64_str = await run_in_threadpool(_sync_omr)
+        return await run_in_threadpool(_sync_omr)
     except HTTPException:
         raise
     except Exception as exc:
         raise HTTPException(status_code=422, detail=str(exc))
-
-    return {
-        "midi_base64": b64_str,
-        "title": clean_title,
-    }
 
 
 if __name__ == "__main__":

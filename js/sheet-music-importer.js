@@ -504,11 +504,15 @@
       throw new Error('No playable piano notes found in this sheet music file.');
     }
 
-    // Hand balance fallback: if no explicit staff 2 existed and all notes became one hand
-    if (!hasExplicitStaff2 && !isMultiPartPiano && typeof global.assignHandsSmart === 'function') {
-      const allLeft = extractedNotes.every(n => n.hand === 'L');
-      const allRight = extractedNotes.every(n => n.hand === 'R');
-      if (allLeft || allRight) {
+    // Hand balance fallback: if no explicit staff 2 existed or one hand is severely imbalanced (<6%)
+    if (typeof global.assignHandsSmart === 'function' && extractedNotes.length > 0) {
+      let leftCount = 0;
+      for (let i = 0; i < extractedNotes.length; i++) {
+        if (extractedNotes[i].hand === 'L') leftCount++;
+      }
+      const leftRatio = leftCount / extractedNotes.length;
+      const severelyImbalanced = extractedNotes.length >= 16 && (leftRatio < 0.06 || leftRatio > 0.94);
+      if ((!hasExplicitStaff2 && !isMultiPartPiano && (leftCount === 0 || leftCount === extractedNotes.length)) || severelyImbalanced) {
         global.assignHandsSmart(extractedNotes);
       }
     }
