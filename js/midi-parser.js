@@ -598,7 +598,10 @@
 
     if (rawTracks.length >= 2 && !useSmartSplit) {
       const avgs = rawTracks.map(tr => tr.reduce((s, n) => s + n.midi, 0) / tr.length);
-      const maxAvgIdx = avgs.indexOf(Math.max.apply(null, avgs));
+      let maxAvgIdx = 0;
+      for (let i = 1; i < avgs.length; i++) {
+        if (avgs[i] > avgs[maxAvgIdx]) maxAvgIdx = i;
+      }
       rawTracks.forEach((tr, idx) => {
         const hand = (idx === maxAvgIdx || avgs[idx] >= 60) ? 'R' : 'L';
         tr.forEach(n => {

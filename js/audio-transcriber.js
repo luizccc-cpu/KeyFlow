@@ -299,7 +299,12 @@
     ];
 
     const notes = (song && Array.isArray(song.notes)) ? song.notes : [];
-    const minOffset = notes.length ? Math.min(0.8, Math.max(0, Math.min.apply(null, notes.map(n => n.time || 0)))) : 0.8;
+    let earliestTime = Infinity;
+    for (let i = 0; i < notes.length; i++) {
+      const t = notes[i].time || 0;
+      if (t < earliestTime) earliestTime = t;
+    }
+    const minOffset = notes.length ? Math.min(0.8, Math.max(0, earliestTime)) : 0.8;
 
     for (let i = 0; i < notes.length; i++) {
       const n = notes[i];
@@ -401,10 +406,23 @@
     formData.append('isolate_piano', options.isolatePiano ? 'true' : 'false');
     formData.append('sensitivity', String(options.sensitivity || 55));
 
-    const res = await fetch(base + '/api/transcribe', {
-      method: 'POST',
-      body: formData
-    });
+    const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    const timeoutId = ctrl ? setTimeout(() => ctrl.abort(), 240000) : null;
+    let res;
+    try {
+      res = await fetch(base + '/api/transcribe', {
+        method: 'POST',
+        body: formData,
+        signal: ctrl ? ctrl.signal : undefined
+      });
+    } catch (fetchErr) {
+      if (timeoutId) clearTimeout(timeoutId);
+      if (fetchErr && fetchErr.name === 'AbortError') {
+        throw new Error('AI Server transcription timed out after 4 minutes.');
+      }
+      throw fetchErr;
+    }
+    if (timeoutId) clearTimeout(timeoutId);
 
     if (!res.ok) {
       const errText = await res.text().catch(() => 'Server error');

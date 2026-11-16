@@ -21,6 +21,3 @@ audio-separator[gpu]>=0.48.0
 demucs
 transkun
 piano_transcription_inference
-pypdfium2
-Pillow
-music21

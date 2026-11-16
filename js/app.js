@@ -113,19 +113,7 @@
     undoStack: [],
     redoStack: [],
 
-    // Phase 4B: Mic Listen, Chord Detector, Metronome, Count-In & Accuracy
-    micListenActive: false,
-    micStream: null,
-    micSource: null,
-    micAnalyser: null,
-    micDataArray: null,
-    micFreqArray: null,
-    micActiveNotes: new Set(),
-    micNoteHoldFrames: {},
-    micLastOnsetMs: {},
-    preMicMutedState: false,
-    lastMicTickMs: 0,
-
+    // Phase 4B: Chord Detector, Metronome, Count-In & Accuracy
     showChordDetector: true,
     metronomeOn: false,
     countInOn: false,
@@ -154,11 +142,6 @@
     state.wrongKeyFlashes = {};
     for (const k in heldKeys) delete heldKeys[k];
     for (const p in pointerMidis) delete pointerMidis[p];
-    if (state.micActiveNotes && state.micActiveNotes.size > 0) {
-      state.micActiveNotes.forEach(function (m) { userNoteOff(m); });
-      state.micActiveNotes.clear();
-    }
-    state.micNoteHoldFrames = {};
   }
 
   window.addEventListener('blur', clearAllActiveInputs);
@@ -1132,11 +1115,6 @@
 
     advanceClock(dt);
     renderFrame(dt);
-
-    if (state.micListenActive && (now - state.lastMicTickMs >= 22)) {
-      state.lastMicTickMs = now;
-      processMicAudio();
-    }
     updateLiveChordUI();
 
     requestAnimationFrame(tickLoop);
@@ -1276,9 +1254,6 @@
     Object.keys(state.userPressed).forEach(function (mStr) {
       activeMidis.add(parseInt(mStr, 10));
     });
-    if (state.micListenActive && state.micActiveNotes) {
-      state.micActiveNotes.forEach(function (m) { activeMidis.add(m); });
-    }
     if (state.isPlaying && state.song && Array.isArray(state.song.notes)) {
       const curT = state.currentTime;
       for (let i = 0; i < state.song.notes.length; i++) {
@@ -1318,200 +1293,6 @@
       chordBadge.classList.add('pop');
     }
     chordBadge.style.display = 'flex';
-  }
-
-  /********************************************************************
-   * PHASE 4B: REAL-TIME MICROPHONE LISTEN MODE (CABLE-FREE IPAD)
-   ********************************************************************/
-  function processMicAudio() {
-    if (!state.micListenActive || !state.micAnalyser || !state.micDataArray || !state.micFreqArray) return;
-    const analyser = state.micAnalyser;
-    const timeData = state.micDataArray;
-    const freqData = state.micFreqArray;
-    analyser.getFloatTimeDomainData(timeData);
-
-    let sumSq = 0;
-    for (let i = 0; i < timeData.length; i++) {
-      sumSq += timeData[i] * timeData[i];
-    }
-    const rms = Math.sqrt(sumSq / timeData.length);
-
-    if (rms < 0.012) {
-      if (state.micActiveNotes && state.micActiveNotes.size > 0) {
-        state.micActiveNotes.forEach(function (m) { userNoteOff(m); });
-        state.micActiveNotes.clear();
-      }
-      state.micNoteHoldFrames = {};
-      return;
-    }
-
-    analyser.getFloatFrequencyData(freqData);
-    const audioCtx = audioEngine.ensureContext();
-    const sampleRate = (audioCtx && audioCtx.sampleRate) ? audioCtx.sampleRate : 44100;
-    const binHz = sampleRate / analyser.fftSize;
-
-    const minBin = Math.max(2, Math.floor(60 / binHz));
-    const maxBin = Math.min(freqData.length - 2, Math.ceil(2200 / binHz));
-
-    const detectedPitches = [];
-
-    for (let b = minBin; b <= maxBin; b++) {
-      const val = freqData[b];
-      if (val > -65 && val > freqData[b - 1] && val > freqData[b + 1]) {
-        const alpha = freqData[b - 1];
-        const beta = val;
-        const gamma = freqData[b + 1];
-        const denom = (2 * beta - alpha - gamma);
-        const delta = denom !== 0 ? (gamma - alpha) / (2 * denom) : 0;
-        const peakHz = (b + delta) * binHz;
-
-        if (peakHz >= 60 && peakHz <= 2200) {
-          const midi = Math.round(69 + 12 * Math.log2(peakHz / 440));
-          if (midi >= 36 && midi <= 96) {
-            const thresh = (state.waitMode && state.waitingMidis && state.waitingMidis.has(midi)) ? -62 : -56;
-            if (val > thresh) {
-              detectedPitches.push({ midi: midi, hz: peakHz, db: val });
-            }
-          }
-        }
-      }
-    }
-
-    detectedPitches.sort(function (a, b) { return b.db - a.db; });
-
-    const filteredMidis = new Set();
-    const acceptedPeaks = [];
-
-    for (let i = 0; i < detectedPitches.length; i++) {
-      const p = detectedPitches[i];
-      let isHarmonic = false;
-      for (let j = 0; j < acceptedPeaks.length; j++) {
-        const lower = acceptedPeaks[j];
-        if (lower.hz < p.hz) {
-          const ratio = p.hz / lower.hz;
-          const nearestInt = Math.round(ratio);
-          if (nearestInt >= 2 && nearestInt <= 6 && Math.abs(ratio - nearestInt) < 0.05) {
-            isHarmonic = true;
-            break;
-          }
-        }
-      }
-      if (!isHarmonic) {
-        acceptedPeaks.push(p);
-        filteredMidis.add(p.midi);
-        if (acceptedPeaks.length >= 4) break;
-      }
-    }
-
-    const nowMs = performance.now();
-    filteredMidis.forEach(function (m) {
-      state.micNoteHoldFrames[m] = 4;
-      if (!state.micActiveNotes.has(m)) {
-        const lastOnset = state.micLastOnsetMs[m] || 0;
-        if (nowMs - lastOnset >= 110) {
-          state.micLastOnsetMs[m] = nowMs;
-          userNoteOn(m, 0.82);
-          state.micActiveNotes.add(m);
-        }
-      }
-    });
-
-    state.micActiveNotes.forEach(function (m) {
-      if (!filteredMidis.has(m)) {
-        if (state.micNoteHoldFrames[m] && state.micNoteHoldFrames[m] > 0) {
-          state.micNoteHoldFrames[m]--;
-        } else {
-          userNoteOff(m);
-          state.micActiveNotes.delete(m);
-          delete state.micNoteHoldFrames[m];
-        }
-      }
-    });
-  }
-
-  async function toggleMicListen() {
-    const btn = document.getElementById('micListenBtn');
-    const txt = document.getElementById('micStatusText');
-
-    if (state.micListenActive) {
-      if (state.micStream) {
-        try {
-          state.micStream.getTracks().forEach(function (t) { t.stop(); });
-        } catch (e) {}
-        state.micStream = null;
-      }
-      if (state.micSource) {
-        try { state.micSource.disconnect(); } catch (e) {}
-        state.micSource = null;
-      }
-      if (state.micAnalyser) {
-        try { state.micAnalyser.disconnect(); } catch (e) {}
-        state.micAnalyser = null;
-      }
-      if (state.micActiveNotes) {
-        state.micActiveNotes.forEach(function (m) { userNoteOff(m); });
-        state.micActiveNotes.clear();
-      }
-      state.micNoteHoldFrames = {};
-      state.micLastOnsetMs = {};
-      state.micListenActive = false;
-
-      audioEngine.muted = !!state.preMicMutedState;
-      const volOn = document.getElementById('volOnSvg');
-      const volOff = document.getElementById('volOffSvg');
-      if (volOn) volOn.style.display = audioEngine.muted ? 'none' : 'block';
-      if (volOff) volOff.style.display = audioEngine.muted ? 'block' : 'none';
-
-      if (btn) btn.classList.remove('connected');
-      if (txt) txt.textContent = '🎤 Mic';
-    } else {
-      try {
-        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-          alert('Microphone access is not supported in this browser.');
-          return;
-        }
-        const stream = await navigator.mediaDevices.getUserMedia({
-          audio: {
-            echoCancellation: false,
-            noiseSuppression: false,
-            autoGainControl: false
-          }
-        });
-
-        const actx = audioEngine.ensureContext();
-        if (actx.state === 'suspended') {
-          await actx.resume();
-        }
-
-        const source = actx.createMediaStreamSource(stream);
-        const analyser = actx.createAnalyser();
-        analyser.fftSize = 4096;
-        analyser.smoothingTimeConstant = 0.2;
-        source.connect(analyser);
-
-        state.preMicMutedState = !!audioEngine.muted;
-        audioEngine.muted = true;
-        const volOn = document.getElementById('volOnSvg');
-        const volOff = document.getElementById('volOffSvg');
-        if (volOn) volOn.style.display = 'none';
-        if (volOff) volOff.style.display = 'block';
-
-        state.micStream = stream;
-        state.micSource = source;
-        state.micAnalyser = analyser;
-        state.micDataArray = new Float32Array(analyser.fftSize);
-        state.micFreqArray = new Float32Array(analyser.frequencyBinCount);
-        state.micActiveNotes = new Set();
-        state.micNoteHoldFrames = {};
-        state.micLastOnsetMs = {};
-        state.micListenActive = true;
-
-        if (btn) btn.classList.add('connected');
-        if (txt) txt.textContent = '🎤 Mic: On';
-      } catch (err) {
-        alert('Could not enable microphone listen mode: ' + (err.message || err));
-      }
-    }
   }
 
   /********************************************************************
@@ -1836,7 +1617,6 @@
       fBtn.classList.toggle('active', fNum === curFinger);
     });
   }
-  const syncNoteInspectorUI = syncEditorInspectorUI;
 
   function setFingerForSelectedNotes(fingerNum) {
     if (!state.song || !Array.isArray(state.song.notes)) return;
@@ -1868,7 +1648,6 @@
     state.redoStack = [];
     syncUndoRedoUI();
   }
-  const pushEditorUndoState = pushUndoSnapshot;
 
   let autoSaveFlashTimer = null;
   function flashAutoSaveIndicator() {
@@ -2896,11 +2675,6 @@
 
   function setViewMode(mode, songId) {
     clearAllActiveInputs();
-    if (mode === 'home' || mode === 'edit') {
-      if (state.micListenActive) {
-        toggleMicListen();
-      }
-    }
 
     if (songId && SONGS[songId]) {
       loadSongById(songId);
@@ -3374,10 +3148,17 @@
 
       pushUndoSnapshot();
 
-      const startTime = Math.min.apply(null, selectedNotes.map(function (n) { return n.time; }));
-      const endTime = Math.max.apply(null, selectedNotes.map(function (n) { return n.time + n.duration; }));
+      let startTime = Infinity;
+      let endTime = -Infinity;
+      let maxVel = 0;
+      for (let i = 0; i < selectedNotes.length; i++) {
+        const sn = selectedNotes[i];
+        if (sn.time < startTime) startTime = sn.time;
+        if (sn.time + sn.duration > endTime) endTime = sn.time + sn.duration;
+        const v = sn.velocity || 0.78;
+        if (v > maxVel) maxVel = v;
+      }
       const mergedDuration = Math.max(0.06, Math.round((endTime - startTime) * 1000) / 1000);
-      const maxVel = Math.max.apply(null, selectedNotes.map(function (n) { return n.velocity || 0.78; }));
       const hand = selectedNotes[0].hand || (targetMidi < 60 ? 'L' : 'R');
 
       let preservedFinger = 0;
@@ -3590,14 +3371,6 @@
       countInBtn.classList.toggle('active', state.countInOn);
       countInBtn.style.color = state.countInOn ? '#38bdf8' : '';
       countInBtn.style.borderColor = state.countInOn ? 'rgba(56, 189, 248, 0.6)' : '';
-    });
-  }
-
-  // Microphone Listen Mode Button
-  const micListenBtn = document.getElementById('micListenBtn');
-  if (micListenBtn) {
-    micListenBtn.addEventListener('click', function () {
-      toggleMicListen();
     });
   }
 
@@ -3832,12 +3605,11 @@
   let isTranscribing = false;
 
   /********************************************************************
-   * UNIFIED AI & OMR SERVER URL PERSISTENCE & SYNC
+   * AI SERVER URL PERSISTENCE
    ********************************************************************/
   function getSavedServerUrl() {
     try {
-      const u = localStorage.getItem('keyflow_ai_server_url') ||
-                localStorage.getItem('keyflow_omr_server_url');
+      const u = localStorage.getItem('keyflow_ai_server_url');
       if (u && typeof u === 'string' && u.trim().length > 0) {
         return u.trim();
       }
@@ -3849,12 +3621,9 @@
     const clean = (url || '').trim() || 'http://localhost:8000';
     try {
       localStorage.setItem('keyflow_ai_server_url', clean);
-      localStorage.setItem('keyflow_omr_server_url', clean);
     } catch (e) {}
     const aiInput = document.getElementById('aiServerUrlInput');
-    const sheetInput = document.getElementById('sheetServerUrlInput');
     if (aiInput && aiInput.value !== clean) aiInput.value = clean;
-    if (sheetInput && sheetInput.value !== clean) sheetInput.value = clean;
   }
 
   const initialServerUrl = getSavedServerUrl();
@@ -3869,8 +3638,6 @@
       if (audioFileInput) audioFileInput.value = '';
       const currentUrl = getSavedServerUrl();
       if (aiServerUrlInput) aiServerUrlInput.value = currentUrl;
-      const sheetInput = document.getElementById('sheetServerUrlInput');
-      if (sheetInput) sheetInput.value = currentUrl;
       refreshServerHealthStatus();
     }
   }
@@ -3907,13 +3674,16 @@
     }
   }
 
+  let healthCheckReqId = 0;
   async function refreshServerHealthStatus() {
     if (!audioTranscriber || !aiServerUrlInput || !aiServerStatusPill) return;
+    const reqId = ++healthCheckReqId;
     const url = aiServerUrlInput.value.trim() || getSavedServerUrl();
     setSavedServerUrl(url);
     aiServerStatusPill.className = 'server-status-pill';
     aiServerStatusPill.textContent = 'Checking...';
     const status = await audioTranscriber.checkServerHealth(url, 4000);
+    if (reqId !== healthCheckReqId) return;
     if (status.ok) {
       aiServerStatusPill.className = 'server-status-pill online';
       aiServerStatusPill.textContent = 'Online';
@@ -4142,236 +3912,8 @@
     });
   }
 
-  /********************************************************************
-   * PHASE 5: SHEET MUSIC IMPORTER MODAL (.MUSICXML, .MXL, .PDF, .PNG, .JPG)
-   ********************************************************************/
-  const sheetModal = document.getElementById('sheetModal');
-  const homeOpenSheetModalBtn = document.getElementById('homeOpenSheetModalBtn');
-  const closeSheetModalBtn = document.getElementById('closeSheetModalBtn');
-  const cancelSheetBtn = document.getElementById('cancelSheetBtn');
-  const sheetDropZone = document.getElementById('sheetDropZone');
-  const sheetFileInput = document.getElementById('sheetFileInput');
-  const selectedSheetFileName = document.getElementById('selectedSheetFileName');
-  const selectedSheetFileMeta = document.getElementById('selectedSheetFileMeta');
-  const sheetServerUrlInput = document.getElementById('sheetServerUrlInput');
-  const testSheetServerBtn = document.getElementById('testSheetServerBtn');
-  const sheetServerStatusPill = document.getElementById('sheetServerStatusPill');
-  const sheetProgressWrap = document.getElementById('sheetProgressWrap');
-  const sheetStatusText = document.getElementById('sheetStatusText');
-  const sheetPercentText = document.getElementById('sheetPercentText');
-  const sheetProgressFill = document.getElementById('sheetProgressFill');
-  const sheetErrorBox = document.getElementById('sheetErrorBox');
-  const startSheetImportBtn = document.getElementById('startSheetImportBtn');
-
-  let selectedSheetFile = null;
-  let isImportingSheet = false;
-
-  if (sheetServerUrlInput) {
-    sheetServerUrlInput.value = getSavedServerUrl();
-  }
-
-  function setSheetModalOpen(open) {
-    if (!sheetModal) return;
-    sheetModal.style.display = '';
-    sheetModal.classList.toggle('open', !!open);
-    sheetModal.setAttribute('aria-hidden', open ? 'false' : 'true');
-    if (open) {
-      setPlaying(false);
-      if (sheetFileInput) sheetFileInput.value = '';
-      const currentUrl = getSavedServerUrl();
-      if (sheetServerUrlInput) sheetServerUrlInput.value = currentUrl;
-      if (aiServerUrlInput) aiServerUrlInput.value = currentUrl;
-      refreshSheetServerStatus();
-    }
-  }
-
-  function updateSelectedSheetFile(file) {
-    selectedSheetFile = file || null;
-    if (sheetErrorBox) {
-      sheetErrorBox.style.display = 'none';
-      sheetErrorBox.textContent = '';
-    }
-    if (selectedSheetFile) {
-      if (sheetDropZone) sheetDropZone.classList.add('has-file');
-      const sizeMb = (selectedSheetFile.size / (1024 * 1024)).toFixed(1);
-      const name = selectedSheetFile.name.toLowerCase();
-      const isDigital = name.endsWith('.musicxml') || name.endsWith('.xml') || name.endsWith('.mxl');
-
-      if (selectedSheetFileName) {
-        selectedSheetFileName.textContent = 'Selected: ' + selectedSheetFile.name + ' (' + sizeMb + ' MB)';
-      }
-      if (selectedSheetFileMeta) {
-        selectedSheetFileMeta.textContent = isDigital
-          ? 'Digital score: Parses instantly offline in your browser'
-          : 'Visual score scan: Converts via Python CV / AI OMR Server';
-      }
-      if (startSheetImportBtn && !isImportingSheet) {
-        startSheetImportBtn.disabled = false;
-      }
-    } else {
-      if (sheetDropZone) sheetDropZone.classList.remove('has-file');
-      if (selectedSheetFileName) {
-        selectedSheetFileName.textContent = 'Tap to choose Sheet Music (.MusicXML, .MXL, .PDF, .PNG, .JPG)';
-      }
-      if (selectedSheetFileMeta) {
-        selectedSheetFileMeta.textContent = 'Digital scores (.musicxml, .mxl) import instantly offline • Scans (.pdf, .png, .jpg) use AI Server OMR';
-      }
-      if (startSheetImportBtn) {
-        startSheetImportBtn.disabled = true;
-      }
-    }
-  }
-
-  async function refreshSheetServerStatus() {
-    if (!sheetServerUrlInput || !sheetServerStatusPill) return;
-    const url = sheetServerUrlInput.value.trim() || getSavedServerUrl();
-    setSavedServerUrl(url);
-
-    sheetServerStatusPill.className = 'server-status-pill';
-    sheetServerStatusPill.textContent = 'Checking...';
-
-    const status = (audioTranscriber && typeof audioTranscriber.checkServerHealth === 'function')
-      ? await audioTranscriber.checkServerHealth(url, 4000)
-      : { ok: false };
-
-    if (status.ok) {
-      sheetServerStatusPill.className = 'server-status-pill online';
-      sheetServerStatusPill.textContent = 'Online';
-    } else {
-      sheetServerStatusPill.className = 'server-status-pill offline';
-      sheetServerStatusPill.textContent = 'Offline';
-    }
-  }
-
-  if (sheetServerUrlInput) {
-    sheetServerUrlInput.addEventListener('input', function () {
-      setSavedServerUrl(sheetServerUrlInput.value);
-    });
-  }
-
-  if (homeOpenSheetModalBtn) {
-    homeOpenSheetModalBtn.addEventListener('click', function () {
-      setAddSongModalOpen(false);
-      setSheetModalOpen(true);
-    });
-  }
-
-  if (closeSheetModalBtn) {
-    closeSheetModalBtn.addEventListener('click', function () {
-      if (!isImportingSheet) setSheetModalOpen(false);
-    });
-  }
-
-  if (cancelSheetBtn) {
-    cancelSheetBtn.addEventListener('click', function () {
-      if (!isImportingSheet) setSheetModalOpen(false);
-    });
-  }
-
-  if (sheetModal) {
-    sheetModal.addEventListener('click', function (e) {
-      if (e.target === sheetModal && !isImportingSheet) {
-        setSheetModalOpen(false);
-      }
-    });
-  }
-
-  if (sheetFileInput) {
-    sheetFileInput.addEventListener('change', function (e) {
-      const f = e.target.files && e.target.files[0];
-      if (f) updateSelectedSheetFile(f);
-    });
-  }
-
-  if (sheetDropZone) {
-    sheetDropZone.addEventListener('click', function (e) {
-      if (isImportingSheet) {
-        e.preventDefault();
-      }
-    });
-    sheetDropZone.addEventListener('dragover', function (e) {
-      e.preventDefault();
-      sheetDropZone.classList.add('dragover');
-    });
-    sheetDropZone.addEventListener('dragleave', function (e) {
-      e.preventDefault();
-      sheetDropZone.classList.remove('dragover');
-    });
-    sheetDropZone.addEventListener('drop', function (e) {
-      e.preventDefault();
-      sheetDropZone.classList.remove('dragover');
-      if (isImportingSheet) return;
-      const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
-      if (f) updateSelectedSheetFile(f);
-    });
-  }
-
-  if (testSheetServerBtn) {
-    testSheetServerBtn.addEventListener('click', function () {
-      refreshSheetServerStatus();
-    });
-  }
-
-  if (startSheetImportBtn) {
-    startSheetImportBtn.addEventListener('click', async function () {
-      if (!selectedSheetFile || isImportingSheet || !window.sheetMusicImporter) return;
-      isImportingSheet = true;
-      startSheetImportBtn.disabled = true;
-      if (sheetErrorBox) sheetErrorBox.style.display = 'none';
-      if (sheetProgressWrap) sheetProgressWrap.style.display = 'flex';
-
-      const serverUrl = (sheetServerUrlInput ? sheetServerUrlInput.value.trim() : '') || getSavedServerUrl();
-      setSavedServerUrl(serverUrl);
-
-      try {
-        const songObj = await window.sheetMusicImporter.importSheetMusicFile(
-          selectedSheetFile,
-          { serverUrl: serverUrl },
-          function (prog) {
-            if (sheetStatusText && prog.stage) sheetStatusText.textContent = prog.stage;
-            if (typeof prog.percent === 'number') {
-              const p = Math.max(0, Math.min(100, Math.round(prog.percent)));
-              if (sheetPercentText) sheetPercentText.textContent = p + '%';
-              if (sheetProgressFill) sheetProgressFill.style.width = p + '%';
-            }
-          }
-        );
-
-        const id = 'sheet_' + Date.now();
-        songObj.id = id;
-        songObj.isCustom = true;
-        songObj.source = 'sheet';
-        songObj.createdAt = Date.now();
-        SONGS[id] = songObj;
-
-        if (audioTranscriber && audioTranscriber.customSongStore) {
-          await audioTranscriber.customSongStore.saveSong(songObj);
-        }
-
-        isImportingSheet = false;
-        if (sheetProgressWrap) sheetProgressWrap.style.display = 'none';
-        startSheetImportBtn.disabled = false;
-        setSheetModalOpen(false);
-        renderHomeSongGrid();
-        loadSongById(id);
-        setViewMode('play');
-      } catch (err) {
-        isImportingSheet = false;
-        startSheetImportBtn.disabled = false;
-        if (sheetErrorBox) {
-          sheetErrorBox.style.display = 'block';
-          sheetErrorBox.textContent = (err && err.message) ? err.message : 'Could not import sheet music score.';
-        }
-      }
-    });
-  }
-
   // Audio Mute Button
   document.getElementById('muteBtn').addEventListener('click', function () {
-    if (state.micListenActive && audioEngine.muted) {
-      alert('Built-in piano sound is muted while Microphone Listen Mode is active to prevent feedback loops. Turn off 🎤 Mic to restore sound.');
-      return;
-    }
     audioEngine.muted = !audioEngine.muted;
     document.getElementById('volOnSvg').style.display = audioEngine.muted ? 'none' : 'block';
     document.getElementById('volOffSvg').style.display = audioEngine.muted ? 'block' : 'none';

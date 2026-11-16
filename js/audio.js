@@ -36,7 +36,7 @@
 
     ensureContext() {
       if (this.ctx) {
-        if (this.ctx.state === 'suspended') {
+        if (this.ctx.state === 'suspended' || this.ctx.state === 'interrupted') {
           try { this.ctx.resume(); } catch (e) {}
         }
         return this.ctx;

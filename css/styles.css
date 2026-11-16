@@ -220,28 +220,6 @@ html, body {
   box-shadow: 0 0 14px rgba(56, 189, 248, 0.35);
 }
 
-.mic-listen-btn {
-  cursor: pointer;
-  background: rgba(255, 255, 255, 0.05);
-}
-
-.mic-listen-btn:hover {
-  background: rgba(255, 255, 255, 0.09);
-  color: #f8fafc;
-}
-
-.mic-listen-btn.connected {
-  background: rgba(56, 189, 248, 0.16);
-  border-color: rgba(56, 189, 248, 0.55);
-  color: #7dd3fc;
-  box-shadow: 0 0 14px rgba(56, 189, 248, 0.28);
-}
-
-.mic-listen-btn.connected .midi-status-dot {
-  background: #38bdf8;
-  box-shadow: 0 0 8px #38bdf8;
-}
-
 /* Practice Accuracy & Streak Pill in Top Bar */
 .accuracy-hud-pill {
   display: inline-flex;

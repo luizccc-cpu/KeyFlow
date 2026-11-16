@@ -9,7 +9,7 @@
   <meta name="apple-mobile-web-app-title" content="KeyFlow" />
   <title>KeyFlow — 5-Second Horizon Virtual Piano</title>
   <link rel="manifest" href="manifest.json" />
-  <link rel="stylesheet" href="css/styles.css?v=4.6" />
+  <link rel="stylesheet" href="css/styles.css?v=4.7" />
 </head>
 <body>
   <div id="appShell">
@@ -82,11 +82,6 @@
 
       <!-- Right Controls: Live MIDI Status, Range Mode & Settings Icon -->
       <div class="top-right">
-        <button id="micListenBtn" type="button" class="midi-status-badge mic-listen-btn" title="Toggle Microphone Listen Mode (auto-mutes internal synth)">
-          <span id="micStatusDot" class="midi-status-dot"></span>
-          <span id="micStatusText">🎤 Mic</span>
-        </button>
-
         <div id="midiStatusBadge" class="midi-status-badge" title="Connect a USB or Bluetooth MIDI keyboard">
           <span id="midiStatusDot" class="midi-status-dot"></span>
           <span id="midiStatusText">MIDI</span>
@@ -551,80 +546,13 @@
         </div>
       </div>
     </div>
-
-    <!-- ==================== PHASE 5: SHEET MUSIC IMPORTER MODAL ==================== -->
-    <div id="sheetModal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="sheetModalTitle">
-      <div class="modal-card">
-        <div class="modal-header">
-          <div style="display:flex; align-items:center; gap:8px;">
-            <span class="modal-icon" style="background: rgba(245, 158, 11, 0.16); color:#f59e0b; border: 1px solid rgba(245, 158, 11, 0.35);">🎼</span>
-            <h2 id="sheetModalTitle" class="modal-title">Sheet Music &rarr; Falling Piano Notes</h2>
-          </div>
-          <button id="closeSheetModalBtn" type="button" class="ui-btn icon-btn" title="Close" aria-label="Close dialog">&times;</button>
-        </div>
-
-        <div class="modal-body">
-          <div class="modal-info-banner">
-            <span>Import digital sheet music (<code>.musicxml</code>, <code>.mxl</code>) instantly offline in your browser, or optical scans (<code>.pdf</code>, <code>.png</code>, <code>.jpg</code>) via the Python OMR AI server.</span>
-          </div>
-
-          <!-- Drag and Drop Zone -->
-          <label for="sheetFileInput" id="sheetDropZone" class="audio-dropzone">
-            <svg width="24" height="24" fill="none" stroke="#f59e0b" stroke-width="1.8" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
-            </svg>
-            <div class="dropzone-text">
-              <strong id="selectedSheetFileName">Tap to choose Sheet Music (.MusicXML, .MXL, .PDF, .PNG, .JPG)</strong>
-              <span id="selectedSheetFileMeta">Digital scores (.musicxml, .mxl) import instantly offline • Scans (.pdf, .png, .jpg) use AI Server OMR</span>
-            </div>
-          </label>
-          <input id="sheetFileInput" type="file" accept=".musicxml,.mxl,.xml,.pdf,.png,.jpg,.jpeg,.webp" style="display:none;" />
-
-          <!-- Sheet Music OMR Backend Config Box -->
-          <div id="sheetServerConfigBox" class="server-config-box">
-            <div class="server-config-row">
-              <div style="display:flex; align-items:center; gap:8px; flex:1;">
-                <span class="modal-label" style="white-space:nowrap;">OMR Server URL:</span>
-                <input id="sheetServerUrlInput" type="text" class="modal-text-input" value="http://localhost:8000" placeholder="http://192.168.1.x:8000" />
-                <button id="testSheetServerBtn" type="button" class="ui-btn" style="padding:4px 9px; font-size:11.5px;">Check</button>
-              </div>
-              <span id="sheetServerStatusPill" class="server-status-pill">Offline</span>
-            </div>
-            <div style="font-size:11.5px; color:#94a3b8; margin-top:2px;">
-              Digital <code>.musicxml</code> and <code>.mxl</code> files are parsed instantly offline in your browser. Visual scans (<code>.pdf</code>, <code>.png</code>, <code>.jpg</code>) connect to this server for CV/AI recognition.
-            </div>
-          </div>
-
-          <!-- Progress & Error Feedback -->
-          <div id="sheetProgressWrap" class="transcribe-progress-wrap" style="display:none;">
-            <div class="transcribe-progress-header">
-              <span id="sheetStatusText">Reading score...</span>
-              <strong id="sheetPercentText">0%</strong>
-            </div>
-            <div class="transcribe-progress-rail">
-              <div id="sheetProgressFill" class="transcribe-progress-fill"></div>
-            </div>
-          </div>
-
-          <div id="sheetErrorBox" class="transcribe-error-box" style="display:none;"></div>
-        </div>
-
-        <div class="modal-footer">
-          <button id="cancelSheetBtn" type="button" class="ui-btn">Cancel</button>
-          <button id="startSheetImportBtn" type="button" class="ui-btn ui-btn-amber" disabled>
-            <span>Import Sheet Music</span>
-          </button>
-        </div>
-      </div>
-    </div>
   </div>
 
   <!-- Modular Application Scripts (Zero Build Step Required) -->
-  <script src="js/songs.js?v=4.6"></script>
-  <script src="js/midi-parser.js?v=4.6"></script>
-  <script src="js/audio-transcriber.js?v=4.6"></script>
-  <script src="js/audio.js?v=4.6"></script>
-  <script src="js/sheet-music-importer.js?v=4.6"></script>
-  <script src="js/app.js?v=4.6"></script>
+  <script src="js/songs.js?v=4.7"></script>
+  <script src="js/midi-parser.js?v=4.7"></script>
+  <script src="js/audio-transcriber.js?v=4.7"></script>
+  <script src="js/audio.js?v=4.7"></script>
+  <script src="js/app.js?v=4.7"></script>
 </body>
 </html>
