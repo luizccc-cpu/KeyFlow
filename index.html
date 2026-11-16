@@ -9,7 +9,7 @@
   <meta name="apple-mobile-web-app-title" content="KeyFlow" />
   <title>KeyFlow — 5-Second Horizon Virtual Piano</title>
   <link rel="manifest" href="manifest.json" />
-  <link rel="stylesheet" href="css/styles.css?v=4.3" />
+  <link rel="stylesheet" href="css/styles.css?v=4.4" />
 </head>
 <body>
   <div id="appShell">
@@ -236,6 +236,9 @@
             </button>
             <button id="editorSnapAllBtn" type="button" class="ui-btn" title="Gently snap nearby note starts onto the active beat grid">
               ⌗ Snap Grid
+            </button>
+            <button id="editorLegatoBtn" type="button" class="ui-btn" title="Extend short chords and notes to sustain until the next chord change">
+              ━ Legato
             </button>
             <select id="editorSplitHandSelect" class="ui-select" title="Choose Left/Right Hand Split Mode">
               <option value="auto" selected>L/R: Auto Smart</option>
@@ -621,11 +624,11 @@
   </div>
 
   <!-- Modular Application Scripts (Zero Build Step Required) -->
-  <script src="js/songs.js?v=4.3"></script>
-  <script src="js/midi-parser.js?v=4.3"></script>
-  <script src="js/audio-transcriber.js?v=4.3"></script>
-  <script src="js/audio.js?v=4.3"></script>
-  <script src="js/sheet-music-importer.js?v=4.3"></script>
-  <script src="js/app.js?v=4.3"></script>
+  <script src="js/songs.js?v=4.4"></script>
+  <script src="js/midi-parser.js?v=4.4"></script>
+  <script src="js/audio-transcriber.js?v=4.4"></script>
+  <script src="js/audio.js?v=4.4"></script>
+  <script src="js/sheet-music-importer.js?v=4.4"></script>
+  <script src="js/app.js?v=4.4"></script>
 </body>
 </html>

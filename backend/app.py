@@ -783,6 +783,73 @@ def filter_midi_bleed_notes(
                 filtered_notes.extend(w_notes)
 
             filtered_notes.sort(key=lambda n: (n.start, n.pitch))
+
+            # Step 3: Bake CC 64 sustain pedal holds into note end times
+            cc64_events = sorted(
+                [cc for cc in inst.control_changes if cc.number == 64],
+                key=lambda cc: cc.time,
+            )
+            pedal_intervals: List[Tuple[float, float]] = []
+            p_start: Optional[float] = None
+            for cc in cc64_events:
+                if cc.value >= 64 and p_start is None:
+                    p_start = float(cc.time)
+                elif cc.value < 64 and p_start is not None:
+                    if float(cc.time) > p_start:
+                        pedal_intervals.append((p_start, float(cc.time)))
+                    p_start = None
+
+            # Map next onset of the same pitch so sustained notes never overlap a re-strike
+            next_same_pitch: List[float] = [1e9] * len(filtered_notes)
+            last_seen_pitch: Dict[int, float] = {}
+            for idx_n in range(len(filtered_notes) - 1, -1, -1):
+                p_val = filtered_notes[idx_n].pitch
+                if p_val in last_seen_pitch:
+                    next_same_pitch[idx_n] = last_seen_pitch[p_val]
+                last_seen_pitch[p_val] = float(filtered_notes[idx_n].start)
+
+            if pedal_intervals:
+                for idx_n, n in enumerate(filtered_notes):
+                    for p_down, p_up in pedal_intervals:
+                        if p_down <= n.end + 0.04 and p_up > n.end:
+                            capped_end = min(p_up - 0.02, next_same_pitch[idx_n] - 0.03)
+                            if capped_end > n.end:
+                                n.end = capped_end
+                            break
+
+            # Step 4: Extend clipped chord clusters (2+ notes within 45ms) up to next chord change
+            clusters_idx: List[List[int]] = []
+            if filtered_notes:
+                cur_c = [0]
+                for idx_n in range(1, len(filtered_notes)):
+                    if (filtered_notes[idx_n].start - filtered_notes[cur_c[0]].start) <= 0.045:
+                        cur_c.append(idx_n)
+                    else:
+                        clusters_idx.append(cur_c)
+                        cur_c = [idx_n]
+                clusters_idx.append(cur_c)
+
+            for c_pos in range(len(clusters_idx) - 1):
+                c_list = clusters_idx[c_pos]
+                c_start = float(filtered_notes[c_list[0]].start)
+                if len(c_list) >= 2:
+                    target_next_t: Optional[float] = None
+                    for next_c_pos in range(c_pos + 1, len(clusters_idx)):
+                        cand_t = float(filtered_notes[clusters_idx[next_c_pos][0]].start)
+                        dt = cand_t - c_start
+                        if dt < 0.22:
+                            continue
+                        if len(clusters_idx[next_c_pos]) >= 2 or dt >= 0.28:
+                            target_next_t = cand_t
+                            break
+                    if target_next_t is not None and 0.25 <= (target_next_t - c_start) <= 2.6:
+                        for idx_n in c_list:
+                            n = filtered_notes[idx_n]
+                            dur = n.end - n.start
+                            max_end = min(target_next_t - 0.04, next_same_pitch[idx_n] - 0.03)
+                            if dur <= 1.25 and (max_end - n.start) > dur + 0.05:
+                                n.end = min(n.start + 3.5, max_end)
+
             inst.notes = filtered_notes
             total_kept += len(filtered_notes)
 

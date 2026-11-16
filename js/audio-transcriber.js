@@ -457,6 +457,11 @@
     }
 
     global.assignHandsSmart(parsedSong.notes);
+    if (typeof global.extendChordLegato === 'function') {
+      global.extendChordLegato(parsedSong.notes);
+    }
+    const maxEndAfterLegato = parsedSong.notes.reduce((m, n) => Math.max(m, n.time + n.duration), 0);
+    parsedSong.duration = Math.max(parsedSong.duration || 10, Math.round((maxEndAfterLegato + 2.0) * 100) / 100);
     parsedSong.source = 'python-ai';
     if (!parsedSong.bpm) parsedSong.bpm = 120;
     if (!parsedSong.beatsPerBar) parsedSong.beatsPerBar = 4;
@@ -840,6 +845,9 @@
 
     extractedNotes.sort((a, b) => a.time - b.time || a.midi - b.midi);
     global.assignHandsSmart(extractedNotes);
+    if (typeof global.extendChordLegato === 'function') {
+      global.extendChordLegato(extractedNotes);
+    }
 
     onsetTimes.sort((a, b) => a - b);
     const estimatedBpm = estimateTempoBpm(onsetTimes);

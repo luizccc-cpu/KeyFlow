@@ -9,6 +9,7 @@
   const parseStandardMidiFile = global.parseStandardMidiFile;
   const calculateAutoRange = global.calculateAutoRange;
   const assignHandsSmart = global.assignHandsSmart;
+  const extendChordLegato = global.extendChordLegato;
   const audioEngine = global.audioEngine;
   const audioTranscriber = global.audioTranscriber;
 
@@ -3286,6 +3287,37 @@
       if (labelEl) {
         labelEl.classList.remove('suspect-active');
         labelEl.textContent = '✓ Hands split: ' + leftCount + ' Left (Blue) • ' + rightCount + ' Right (Green)';
+      }
+    });
+  }
+
+  const editorLegatoBtn = document.getElementById('editorLegatoBtn');
+  if (editorLegatoBtn) {
+    editorLegatoBtn.addEventListener('click', function () {
+      if (!state.song || !Array.isArray(state.song.notes) || state.song.notes.length < 2) return;
+      if (typeof extendChordLegato !== 'function') return;
+
+      const hasMultiSelection = state.selectedNoteIndices && state.selectedNoteIndices.size >= 2;
+      let targetNotes = state.song.notes;
+      if (hasMultiSelection) {
+        targetNotes = [];
+        state.selectedNoteIndices.forEach(function (idx) {
+          if (state.song.notes[idx]) targetNotes.push(state.song.notes[idx]);
+        });
+      }
+
+      pushUndoSnapshot();
+      const count = extendChordLegato(targetNotes);
+      if (count === 0) {
+        state.undoStack.pop();
+        syncUndoRedoUI();
+      }
+      const keepRef = (!hasMultiSelection && state.selectedNoteIndex >= 0) ? state.song.notes[state.selectedNoteIndex] : null;
+      commitSongEdit(keepRef);
+      const labelEl = document.getElementById('inspectorNoteLabel');
+      if (labelEl) {
+        labelEl.classList.remove('suspect-active');
+        labelEl.textContent = '✓ Extended legato sustain on ' + count + ' note(s)';
       }
     });
   }

@@ -268,6 +268,125 @@
   }
 
   /********************************************************************
+   * MUSICAL CHORD & LEGATO SUSTAIN RECOVERY
+   * - Extends clipped stem-separated chords and bass notes so they
+   *   sustain cleanly until the next chord change (up to 2.6s),
+   *   while preventing any overlap with re-strikes of the same key.
+   ********************************************************************/
+  function extendChordLegato(notes, options) {
+    if (!Array.isArray(notes) || notes.length < 2) return 0;
+
+    const CLUSTER_WINDOW_SEC = 0.045; // 45ms simultaneous chord onset window
+    const RELEASE_GAP_SEC = 0.04;     // 40ms visual breathing gap before next chord
+    const MAX_CHORD_GAP_SEC = (options && options.maxChordGapSec) || 2.6;
+    const MAX_MELODY_GAP_SEC = (options && options.maxMelodyGapSec) || 1.35;
+
+    notes.sort((a, b) => a.time - b.time || a.midi - b.midi);
+
+    // 1. Precompute next onset time of the exact same MIDI pitch to prevent overlaps
+    const nextSamePitchTime = new Array(notes.length).fill(Infinity);
+    const lastSeenByPitch = {};
+    for (let i = notes.length - 1; i >= 0; i--) {
+      const m = notes[i].midi;
+      if (lastSeenByPitch[m] !== undefined) {
+        nextSamePitchTime[i] = lastSeenByPitch[m];
+      }
+      lastSeenByPitch[m] = notes[i].time;
+    }
+
+    // 2. Group notes into simultaneous onset clusters (within 45ms)
+    const clusters = [];
+    let curCluster = [{ note: notes[0], index: 0 }];
+    for (let i = 1; i < notes.length; i++) {
+      if (notes[i].time - curCluster[0].note.time <= CLUSTER_WINDOW_SEC) {
+        curCluster.push({ note: notes[i], index: i });
+      } else {
+        clusters.push(curCluster);
+        curCluster = [{ note: notes[i], index: i }];
+      }
+    }
+    if (curCluster.length > 0) {
+      clusters.push(curCluster);
+    }
+
+    let extendedCount = 0;
+
+    for (let cIdx = 0; cIdx < clusters.length - 1; cIdx++) {
+      const cItems = clusters[cIdx];
+      const clusterStart = cItems[0].note.time;
+
+      if (cItems.length >= 2) {
+        // Chord cluster (2+ simultaneous notes): find next distinct musical cluster (>= 0.25s ahead)
+        let targetNextTime = null;
+        for (let nextIdx = cIdx + 1; nextIdx < clusters.length; nextIdx++) {
+          const candTime = clusters[nextIdx][0].note.time;
+          const dt = candTime - clusterStart;
+          if (dt < 0.22) continue;
+          if (clusters[nextIdx].length >= 2 || dt >= 0.28) {
+            targetNextTime = candTime;
+            break;
+          }
+        }
+
+        if (targetNextTime !== null) {
+          const gap = targetNextTime - clusterStart;
+          if (gap >= 0.25 && gap <= MAX_CHORD_GAP_SEC) {
+            for (let k = 0; k < cItems.length; k++) {
+              const n = cItems[k].note;
+              const nIdx = cItems[k].index;
+              const maxEnd = Math.min(targetNextTime - RELEASE_GAP_SEC, nextSamePitchTime[nIdx] - 0.03);
+              const desiredDur = Math.round((maxEnd - n.time) * 1000) / 1000;
+              if (n.duration <= 1.25 && desiredDur > n.duration + 0.05) {
+                n.duration = Math.min(3.5, desiredDur);
+                extendedCount++;
+              }
+            }
+          }
+        }
+      } else {
+        // Single note cluster: extend bass notes to next bass/chord, or melody notes to next melody note
+        const n = cItems[0].note;
+        const nIdx = cItems[0].index;
+        const isBass = (n.hand === 'L' || n.midi < 56);
+        let targetNextTime = null;
+
+        for (let nextIdx = cIdx + 1; nextIdx < clusters.length; nextIdx++) {
+          const nextCluster = clusters[nextIdx];
+          const candTime = nextCluster[0].note.time;
+          const dt = candTime - n.time;
+          if (dt < 0.18) continue;
+
+          if (isBass) {
+            const hasBassOrChord = nextCluster.length >= 2 || nextCluster.some(item => item.note.hand === 'L' || item.note.midi < 58);
+            if (hasBassOrChord) {
+              targetNextTime = candTime;
+              break;
+            }
+          } else {
+            const hasRightOrChord = nextCluster.length >= 2 || nextCluster.some(item => item.note.hand === 'R' || item.note.midi >= 55);
+            if (hasRightOrChord) {
+              targetNextTime = candTime;
+              break;
+            }
+          }
+        }
+
+        const maxGap = isBass ? MAX_CHORD_GAP_SEC : MAX_MELODY_GAP_SEC;
+        if (targetNextTime !== null && (targetNextTime - n.time) <= maxGap) {
+          const maxEnd = Math.min(targetNextTime - RELEASE_GAP_SEC, nextSamePitchTime[nIdx] - 0.03);
+          const desiredDur = Math.round((maxEnd - n.time) * 1000) / 1000;
+          if (n.duration <= (isBass ? 1.1 : 0.75) && desiredDur > n.duration + 0.05) {
+            n.duration = Math.min(isBass ? 3.2 : 2.0, desiredDur);
+            extendedCount++;
+          }
+        }
+      }
+    }
+
+    return extendedCount;
+  }
+
+  /********************************************************************
    * NATIVE BINARY .MID FILE PARSER (ZERO EXTERNAL DEPENDENCIES)
    * - Parses tempo events (0x51) and time signature events (0x58)
    * - Generates synchronized measure & beat gridlines
@@ -322,6 +441,7 @@
       let runningStatus = 0;
       const activeNotes = {};
       const trackNotes = [];
+      const pedalEvents = [];
 
       while (pos < trackEnd) {
         tick += readVarLen();
@@ -345,6 +465,17 @@
           const key = channel + '_' + noteNum;
 
           if (isNoteOn) {
+            if (activeNotes[key]) {
+              const prevObj = activeNotes[key];
+              const prevEnd = Math.max(prevObj.startTick + 15, tick - 5);
+              if (prevEnd > maxSongTick) maxSongTick = prevEnd;
+              trackNotes.push({
+                midi: noteNum,
+                startTick: prevObj.startTick,
+                endTick: prevEnd,
+                velocity: prevObj.vel
+              });
+            }
             activeNotes[key] = { startTick: tick, vel: vel / 127, midi: noteNum };
           } else if (activeNotes[key]) {
             const startObj = activeNotes[key];
@@ -358,7 +489,13 @@
               velocity: startObj.vel
             });
           }
-        } else if (eventType === 0xa0 || eventType === 0xb0 || eventType === 0xe0) {
+        } else if (eventType === 0xb0) {
+          const ccNum = view.getUint8(pos++);
+          const ccVal = view.getUint8(pos++);
+          if (ccNum === 64) {
+            pedalEvents.push({ tick: tick, down: ccVal >= 64 });
+          }
+        } else if (eventType === 0xa0 || eventType === 0xe0) {
           pos += 2;
         } else if (eventType === 0xc0 || eventType === 0xd0) {
           pos += 1;
@@ -380,6 +517,52 @@
           pos += sysLen;
         } else {
           pos++;
+        }
+      }
+
+      if (pedalEvents.length > 0 && trackNotes.length > 0) {
+        pedalEvents.sort((a, b) => a.tick - b.tick);
+        const pedalIntervals = [];
+        let pDownTick = null;
+        for (let pIdx = 0; pIdx < pedalEvents.length; pIdx++) {
+          const pe = pedalEvents[pIdx];
+          if (pe.down && pDownTick === null) {
+            pDownTick = pe.tick;
+          } else if (!pe.down && pDownTick !== null) {
+            if (pe.tick > pDownTick) {
+              pedalIntervals.push([pDownTick, pe.tick]);
+            }
+            pDownTick = null;
+          }
+        }
+
+        if (pedalIntervals.length > 0) {
+          trackNotes.sort((a, b) => a.startTick - b.startTick || a.midi - b.midi);
+          const nextSameMidiTick = new Array(trackNotes.length).fill(Infinity);
+          const lastTickByMidi = {};
+          for (let ti = trackNotes.length - 1; ti >= 0; ti--) {
+            const m = trackNotes[ti].midi;
+            if (lastTickByMidi[m] !== undefined) {
+              nextSameMidiTick[ti] = lastTickByMidi[m];
+            }
+            lastTickByMidi[m] = trackNotes[ti].startTick;
+          }
+
+          for (let ti = 0; ti < trackNotes.length; ti++) {
+            const tn = trackNotes[ti];
+            for (let pi = 0; pi < pedalIntervals.length; pi++) {
+              const downTick = pedalIntervals[pi][0];
+              const upTick = pedalIntervals[pi][1];
+              if (downTick <= tn.endTick + 20 && upTick > tn.endTick) {
+                const cappedEnd = Math.min(upTick, nextSameMidiTick[ti] - 15);
+                if (cappedEnd > tn.endTick) {
+                  tn.endTick = cappedEnd;
+                  if (tn.endTick > maxSongTick) maxSongTick = tn.endTick;
+                }
+                break;
+              }
+            }
+          }
         }
       }
 
@@ -550,6 +733,7 @@
   }
 
   global.assignHandsSmart = assignHandsSmart;
+  global.extendChordLegato = extendChordLegato;
   global.parseStandardMidiFile = parseStandardMidiFile;
   global.calculateAutoRange = calculateAutoRange;
 })(window);
