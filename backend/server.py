@@ -1,5 +1,5 @@
-﻿"""
-KeyFlow (Piano-Flow) â€” Phase 3 Hybrid AI Audio-to-MIDI Backend Server
+"""
+KeyFlow (Piano-Flow) — Phase 3 Hybrid AI Audio-to-MIDI Backend Server
 =====================================================================
 FastAPI service providing:
 1. Multi-tier Studio Stem Separation:
@@ -422,7 +422,7 @@ def isolate_piano_with_roformer(input_audio_path: Path, work_dir: Path) -> Path 
                             as_ver = importlib.metadata.version("audio-separator")
                         except Exception:
                             as_ver = "unknown"
-                        print(f"[KeyFlow Backend] ERROR: separator model '{PIANO_SEPARATOR_MODEL}' not available in audio-separator {as_ver} â€” upgrade to >=0.48.0. Falling back to htdemucs_6s.")
+                        print(f"[KeyFlow Backend] ERROR: separator model '{PIANO_SEPARATOR_MODEL}' not available in audio-separator {as_ver} — upgrade to >=0.48.0. Falling back to htdemucs_6s.")
                         _cached_separator = None
                         return None
                     raise

@@ -1,4 +1,4 @@
-﻿import os
+import os
 
 # Configure writable cache directories and Gradio SSR mode for Hugging Face ZeroGPU Spaces
 os.environ["TORCH_HOME"] = "/tmp/torch"
@@ -379,7 +379,7 @@ def isolate_piano_with_roformer(input_audio_path: Path, work_dir: Path) -> Path 
                         as_ver = importlib.metadata.version("audio-separator")
                     except Exception:
                         as_ver = "unknown"
-                    print(f"[KeyFlow Space] ERROR: separator model '{PIANO_SEPARATOR_MODEL}' not available in audio-separator {as_ver} â€” upgrade to >=0.48.0. Falling back to htdemucs_6s.")
+                    print(f"[KeyFlow Space] ERROR: separator model '{PIANO_SEPARATOR_MODEL}' not available in audio-separator {as_ver} — upgrade to >=0.48.0. Falling back to htdemucs_6s.")
                     return None
                 raise
 
@@ -1154,18 +1154,17 @@ if hasattr(gr, "routes") and hasattr(gr.routes, "App") and hasattr(gr.routes.App
 
 
 # 1. Create the Gradio Blocks UI and wire the @spaces.GPU function so ZeroGPU detects it during startup
-with gr.Blocks(title="KeyFlow AI Audio & Sheet Music Server") as demo:
+with gr.Blocks(title="KeyFlow AI Audio Server") as demo:
     gr.Markdown(
         """
-        # ðŸŽ¹ KeyFlow AI Audio & Sheet Music Server (ZeroGPU Online)
-        This Hugging Face Gradio Space powers **Phase 3 AI Audio-to-MIDI Transcription** (`BS-RoFormer` + `Transkun` / `ByteDance Piano AI`) and **Phase 5 Sheet Music Optical Music Recognition (OMR)** on **ZeroGPU** for the **KeyFlow Virtual Piano** iPad web app.
+        # 🎹 KeyFlow AI Audio-to-MIDI Server (ZeroGPU Online)
+        This Hugging Face Gradio Space powers **Phase 3 AI Audio-to-MIDI Transcription** (`BS-RoFormer` + `Transkun` / `ByteDance Piano AI`) on **ZeroGPU** for the **KeyFlow Virtual Piano** iPad web app.
 
         ### Active API Endpoints
-        - **`GET /health`** â€” Returns server health & active engines (`BS-RoFormer`, `HT-Demucs 6S`, `Transkun`, `ByteDance Piano AI`, `Sheet-OMR`).
-        - **`POST /api/transcribe`** â€” Accepts `file`, `isolate_piano`, `sensitivity`, and optional `engine` (`multipart/form-data`) and returns `{"midi_base64": "...", "title": "...", "separator_used": "...", "transcriber_used": "..."}`.
-        - **`POST /api/omr`** â€” Accepts sheet music (`.pdf`, `.png`, `.jpg`, `.musicxml`, `.mxl`) and returns `{"musicxml": "..."}` or `{"midi_base64": "..."}`.
+        - **`GET /health`** — Returns server health & active engines (`BS-RoFormer`, `HT-Demucs 6S`, `Transkun`, `ByteDance Piano AI`).
+        - **`POST /api/transcribe`** — Accepts `file`, `isolate_piano`, `sensitivity`, and optional `engine` (`multipart/form-data`) and returns `{"midi_base64": "...", "title": "...", "separator_used": "...", "transcriber_used": "...", "bpm": 120.0, "grid_offset": 0.8}`.
 
-        **How to connect from KeyFlow:** Copy this Space's public `.hf.space` URL (e.g. `https://<username>-<space-name>.hf.space`) into the **AI Server URL** field inside KeyFlow's **AI Audio** or **Sheet Music** modal and tap **Check**.
+        **How to connect from KeyFlow:** Copy this Space's public `.hf.space` URL (e.g. `https://<username>-<space-name>.hf.space`) into the **AI Server URL** field inside KeyFlow's **Add MP3 File** modal and tap **Check**.
         """
     )
     with gr.Row():
