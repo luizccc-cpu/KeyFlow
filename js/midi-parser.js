@@ -9,12 +9,15 @@
    * - Tracks moving pitch centers (EMA initialized at 48 for L, 67 for R)
    *   with a soft split bias around C4 (MIDI 60)
    ********************************************************************/
-  function assignHandsSmart(notes) {
+  function assignHandsSmart(notes, options) {
     if (!Array.isArray(notes) || notes.length === 0) return notes;
 
     const MAX_HAND_SPAN = 14; // 10th interval (14 semitones)
     const CLUSTER_WINDOW_SEC = 0.035; // 35ms simultaneous onset window
-    const EMA_ALPHA = 0.28;
+    const EMA_ALPHA = 0.22;
+    const manualSplitMidi = (options && typeof options.splitMidi === 'number' && isFinite(options.splitMidi))
+      ? options.splitMidi
+      : null;
 
     // Sort notes chronologically, then ascending by pitch
     notes.sort((a, b) => a.time - b.time || a.midi - b.midi);
@@ -36,40 +39,126 @@
       clusters.push(currentCluster);
     }
 
-    // 2. Track moving pitch centers for Left (L) and Right (R) hands
-    let leftCenter = 48;  // C3
-    let rightCenter = 67; // G4
+    // If a manual split point was requested, split directly around manualSplitMidi
+    // while still splitting single-side chords wider than MAX_HAND_SPAN
+    if (manualSplitMidi !== null) {
+      for (let cIdx = 0; cIdx < clusters.length; cIdx++) {
+        const cNotes = clusters[cIdx];
+        cNotes.sort((a, b) => a.midi - b.midi);
+        for (let i = 0; i < cNotes.length; i++) {
+          cNotes[i].hand = (cNotes[i].midi < manualSplitMidi) ? 'L' : 'R';
+        }
+      }
+      return notes;
+    }
 
+    // 2. Song-Adaptive Register Calibration (25th / 75th percentiles + bimodal valley pivot)
+    const sortedPitches = notes.map(n => n.midi).sort((a, b) => a - b);
+    const p25 = sortedPitches[Math.floor(sortedPitches.length * 0.25)] || 48;
+    const p46 = sortedPitches[Math.floor(sortedPitches.length * 0.46)] || 58;
+    const p75 = sortedPitches[Math.floor(sortedPitches.length * 0.75)] || 67;
+
+    let anchorL = Math.max(36, Math.min(58, p25));
+    let anchorR = Math.max(54, Math.min(84, p75));
+    if (anchorR - anchorL < 10) {
+      const mid = (anchorL + anchorR) * 0.5;
+      anchorL = Math.max(36, Math.round(mid - 5));
+      anchorR = Math.min(84, Math.round(mid + 5));
+    }
+
+    // Build smoothed pitch histogram to locate natural valley between anchorL and anchorR
+    const pitchHist = new Array(128).fill(0);
+    for (let i = 0; i < notes.length; i++) {
+      const m = Math.max(0, Math.min(127, notes[i].midi));
+      const w = Math.min(1.5, Math.max(0.15, notes[i].duration || 0.25));
+      pitchHist[m] += w;
+    }
+    let valleyPitch = p46;
+    let minValleyWeight = Infinity;
+    const searchLow = Math.max(46, Math.round(anchorL + 3));
+    const searchHigh = Math.min(68, Math.round(anchorR - 3));
+    if (searchHigh >= searchLow) {
+      for (let m = searchLow; m <= searchHigh; m++) {
+        const smoothW = pitchHist[m - 1] * 0.25 + pitchHist[m] * 0.5 + pitchHist[m + 1] * 0.25;
+        if (smoothW < minValleyWeight) {
+          minValleyWeight = smoothW;
+          valleyPitch = m;
+        }
+      }
+    }
+
+    const songPivot = Math.max(50, Math.min(65, Math.round(0.5 * p46 + 0.5 * valleyPitch)));
+    let leftCenter = anchorL;
+    let rightCenter = anchorR;
+
+    // 3. Walk clusters with sustained-note & local-window hand-span constraints
     for (let cIdx = 0; cIdx < clusters.length; cIdx++) {
       const cNotes = clusters[cIdx];
       cNotes.sort((a, b) => a.midi - b.midi);
 
+      const clusterTime = cNotes[0].time;
       const minPitch = cNotes[0].midi;
       const maxPitch = cNotes[cNotes.length - 1].midi;
       const totalSpan = maxPitch - minPitch;
 
+      // Inspect active (held) or very recent notes (within 0.42s) from previous clusters
+      let activeLeftMin = null;
+      let activeRightMax = null;
+      for (let prevIdx = cIdx - 1; prevIdx >= 0; prevIdx--) {
+        const pCluster = clusters[prevIdx];
+        if (clusterTime - pCluster[0].time > 4.0) break;
+        for (let j = 0; j < pCluster.length; j++) {
+          const pn = pCluster[j];
+          const isHeld = (pn.time + (pn.duration || 0.25)) > (clusterTime + 0.04);
+          const isRecent = (clusterTime - pn.time) <= 0.42;
+          if (isHeld || isRecent) {
+            if (pn.hand === 'L') {
+              if (activeLeftMin === null || pn.midi < activeLeftMin) activeLeftMin = pn.midi;
+            } else if (pn.hand === 'R') {
+              if (activeRightMax === null || pn.midi > activeRightMax) activeRightMax = pn.midi;
+            }
+          }
+        }
+      }
+
+      // Compute local 1.2s window pitch range for broken-chord / arpeggio context
+      let localMin = minPitch;
+      let localMax = maxPitch;
+      for (let wIdx = Math.max(0, cIdx - 8); wIdx <= Math.min(clusters.length - 1, cIdx + 8); wIdx++) {
+        const wCluster = clusters[wIdx];
+        if (Math.abs(wCluster[0].time - clusterTime) <= 0.65) {
+          for (let j = 0; j < wCluster.length; j++) {
+            if (wCluster[j].midi < localMin) localMin = wCluster[j].midi;
+            if (wCluster[j].midi > localMax) localMax = wCluster[j].midi;
+          }
+        }
+      }
+
+      const centerMid = (leftCenter + rightCenter) * 0.5;
+      const localMid = (localMax - localMin >= 12) ? ((localMin + localMax) * 0.5) : songPivot;
+      const effectivePivot = 0.50 * centerMid + 0.30 * songPivot + 0.20 * localMid;
+
       if (cNotes.length === 1) {
         const p = cNotes[0].midi;
-        if (p < 46) {
+        const leftSpanViolation = (activeLeftMin !== null && (p - activeLeftMin) > MAX_HAND_SPAN) ? 18.0 : 0.0;
+        const rightSpanViolation = (activeRightMax !== null && (activeRightMax - p) > MAX_HAND_SPAN) ? 18.0 : 0.0;
+
+        if (p < anchorL - 5 && rightSpanViolation === 0) {
           cNotes[0].hand = 'L';
-        } else if (p > 74) {
+        } else if (p > anchorR + 5 && leftSpanViolation === 0) {
           cNotes[0].hand = 'R';
         } else {
-          const midPivot = (leftCenter + rightCenter) * 0.5;
-          const distL = Math.abs(p - leftCenter) + (p >= 60 ? (p - 60) * 0.35 : 0);
-          const distR = Math.abs(p - rightCenter) + (p < 60 ? (60 - p) * 0.35 : 0);
+          const distL = Math.abs(p - leftCenter) + (p >= effectivePivot ? (p - effectivePivot) * 0.45 : 0) + leftSpanViolation;
+          const distR = Math.abs(p - rightCenter) + (p < effectivePivot ? (effectivePivot - p) * 0.45 : 0) + rightSpanViolation;
 
           if (Math.abs(distL - distR) < 1.2) {
-            cNotes[0].hand = (p < 60 || p < midPivot) ? 'L' : 'R';
+            cNotes[0].hand = (p < effectivePivot) ? 'L' : 'R';
           } else {
             cNotes[0].hand = (distL < distR) ? 'L' : 'R';
           }
         }
       } else if (totalSpan > MAX_HAND_SPAN) {
         // Total span exceeds 14 semitones: must split between Left and Right hands
-        // Find split index k (1..cNotes.length-1) that maximizes the internal pitch gap
-        // while keeping both hands within MAX_HAND_SPAN if possible.
-        const midPivot = (leftCenter + rightCenter) * 0.5;
         let bestSplit = 1;
         let bestScore = -9999;
 
@@ -82,8 +171,8 @@
           const overflowPenalty =
             Math.max(0, leftSpan - MAX_HAND_SPAN) * 4.5 +
             Math.max(0, rightSpan - MAX_HAND_SPAN) * 4.5;
-          const pivotPenalty = Math.abs(splitBoundaryPitch - midPivot) * 0.22 +
-            Math.abs(splitBoundaryPitch - 60) * 0.15;
+          const pivotPenalty = Math.abs(splitBoundaryPitch - effectivePivot) * 0.30 +
+            Math.abs(splitBoundaryPitch - songPivot) * 0.15;
 
           const score = gap * 2.0 - overflowPenalty - pivotPenalty;
           if (score > bestScore) {
@@ -97,7 +186,6 @@
         }
       } else {
         // Compact cluster (totalSpan <= 14 semitones, 2+ notes)
-        // Check if there is a wide internal gap (>= 7 semitones) straddling the L/R centers
         let maxGap = 0;
         let maxGapIdx = -1;
         for (let k = 1; k < cNotes.length; k++) {
@@ -113,8 +201,8 @@
 
         const straddlesHands =
           maxGap >= 7 &&
-          lowAvg <= 60 &&
-          highAvg >= 59 &&
+          lowAvg <= effectivePivot + 1 &&
+          highAvg >= effectivePivot - 1 &&
           Math.abs(lowAvg - leftCenter) <= Math.abs(lowAvg - rightCenter) + 2 &&
           Math.abs(highAvg - rightCenter) <= Math.abs(highAvg - leftCenter) + 2;
 
@@ -123,12 +211,19 @@
             cNotes[i].hand = (i < maxGapIdx) ? 'L' : 'R';
           }
         } else {
-          // Assign the compact chord to a single hand based on moving centers + C4 soft bias
           const clusterAvg = cNotes.reduce((s, n) => s + n.midi, 0) / cNotes.length;
-          const distL = Math.abs(clusterAvg - leftCenter) + (clusterAvg >= 60 ? (clusterAvg - 60) * 0.4 : 0);
-          const distR = Math.abs(clusterAvg - rightCenter) + (clusterAvg < 60 ? (60 - clusterAvg) * 0.4 : 0);
+          const leftSpanViolation = (activeLeftMin !== null && (maxPitch - activeLeftMin) > MAX_HAND_SPAN) ? 18.0 : 0.0;
+          const rightSpanViolation = (activeRightMax !== null && (activeRightMax - minPitch) > MAX_HAND_SPAN) ? 18.0 : 0.0;
+
+          const distL = Math.abs(clusterAvg - leftCenter) +
+            (clusterAvg >= effectivePivot ? (clusterAvg - effectivePivot) * 0.45 : 0) +
+            leftSpanViolation;
+          const distR = Math.abs(clusterAvg - rightCenter) +
+            (clusterAvg < effectivePivot ? (effectivePivot - clusterAvg) * 0.45 : 0) +
+            rightSpanViolation;
+
           const assignedHand = (Math.abs(distL - distR) < 1.2)
-            ? (clusterAvg < 60 ? 'L' : 'R')
+            ? (clusterAvg < effectivePivot ? 'L' : 'R')
             : (distL < distR ? 'L' : 'R');
 
           for (let i = 0; i < cNotes.length; i++) {
@@ -137,7 +232,7 @@
         }
       }
 
-      // 3. Update exponential moving average pitch centers
+      // 4. Update EMA pitch centers tethered to song anchors (prevents runaway hand drift)
       let lSum = 0, lCount = 0;
       let rSum = 0, rCount = 0;
       for (let i = 0; i < cNotes.length; i++) {
@@ -152,16 +247,20 @@
 
       if (lCount > 0) {
         const lAvg = lSum / lCount;
-        leftCenter = Math.max(33, Math.min(62, leftCenter * (1 - EMA_ALPHA) + lAvg * EMA_ALPHA));
+        const rawL = leftCenter * (1 - EMA_ALPHA) + lAvg * EMA_ALPHA;
+        const tetheredL = rawL * 0.82 + anchorL * 0.18;
+        leftCenter = Math.max(33, Math.min(songPivot + 2, tetheredL));
       }
       if (rCount > 0) {
         const rAvg = rSum / rCount;
-        rightCenter = Math.max(56, Math.min(90, rightCenter * (1 - EMA_ALPHA) + rAvg * EMA_ALPHA));
+        const rawR = rightCenter * (1 - EMA_ALPHA) + rAvg * EMA_ALPHA;
+        const tetheredR = rawR * 0.82 + anchorR * 0.18;
+        rightCenter = Math.max(songPivot - 2, Math.min(90, tetheredR));
       }
-      if (leftCenter > rightCenter - 6) {
+      if (leftCenter > rightCenter - 10) {
         const mid = (leftCenter + rightCenter) * 0.5;
-        leftCenter = Math.min(57, mid - 3);
-        rightCenter = Math.max(63, mid + 3);
+        leftCenter = Math.min(songPivot - 2, mid - 5);
+        rightCenter = Math.max(songPivot + 2, mid + 5);
       }
     }
 

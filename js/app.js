@@ -1739,7 +1739,7 @@
       if (labelEl) {
         labelEl.classList.remove('suspect-active');
         if (state.editorTool === 'group') {
-          labelEl.textContent = 'Group Select: Tap notes of the same pitch or drag a box to select & merge';
+          labelEl.textContent = 'Group Select: Tap any notes or drag a box to select multiple notes';
         } else {
           labelEl.textContent = 'Tap a note to inspect/edit • Drag empty runway to scroll time';
         }
@@ -1770,8 +1770,12 @@
     }
 
     if (groupCount >= 2) {
-      const firstIdx = state.selectedNoteIndices.values().next().value;
-      const firstNote = state.song.notes[firstIdx] || note;
+      const selectedArr = Array.from(state.selectedNoteIndices);
+      const firstNote = state.song.notes[selectedArr[0]] || note;
+      const firstMidi = firstNote ? firstNote.midi : null;
+      const allSamePitch = selectedArr.every(function (idx) {
+        return state.song.notes[idx] && state.song.notes[idx].midi === firstMidi;
+      });
       const pitchName = firstNote ? (firstNote.name || midiToName(firstNote.midi)) : '';
       if (mergeBtn) {
         mergeBtn.disabled = false;
@@ -1779,7 +1783,11 @@
       }
       if (labelEl) {
         labelEl.classList.remove('suspect-active');
-        labelEl.textContent = groupCount + ' × ' + pitchName + ' notes selected — ready to merge';
+        if (allSamePitch) {
+          labelEl.textContent = groupCount + ' × ' + pitchName + ' notes selected — ready to merge, flip hand, or edit';
+        } else {
+          labelEl.textContent = groupCount + ' notes selected across multiple keys — ready to flip hand, transpose, snap, or delete';
+        }
       }
     } else {
       if (mergeBtn) {
@@ -1792,7 +1800,7 @@
           labelEl.textContent = 'Copy Mode: Tap any piano key or runway lane to place copy';
         } else if (state.editorTool === 'group') {
           labelEl.classList.remove('suspect-active');
-          labelEl.textContent = '1 × ' + note.name + ' selected — tap more ' + note.name + ' notes or drag a box to merge';
+          labelEl.textContent = '1 note (' + note.name + ') selected — tap more notes or drag a box to select multiple';
         } else {
           const fingerSuffix = (note.finger >= 1 && note.finger <= 5) ? (' • Finger: ' + note.finger) : '';
           let text = note.name + ' (MIDI ' + note.midi + ')' + fingerSuffix + ' • Start: ' + note.time.toFixed(2) + 's • Len: ' + note.duration.toFixed(2) + 's';
@@ -2146,43 +2154,9 @@
       }
     }
 
-    let targetMidi = null;
-    if (baseIndices && baseIndices.size > 0) {
-      const firstBaseIdx = baseIndices.values().next().value;
-      if (notes[firstBaseIdx]) {
-        targetMidi = notes[firstBaseIdx].midi;
-      }
-    }
-    if (targetMidi === null) {
-      const startLaneMidi = xToNearestMidi(box.x0);
-      const hasStartLane = intersecting.some(function (item) {
-        return item.midi === startLaneMidi;
-      });
-      if (hasStartLane) {
-        targetMidi = startLaneMidi;
-      } else if (intersecting.length > 0) {
-        const counts = {};
-        let bestMidi = intersecting[0].midi;
-        let bestCount = 0;
-        for (let j = 0; j < intersecting.length; j++) {
-          const m = intersecting[j].midi;
-          counts[m] = (counts[m] || 0) + 1;
-          if (counts[m] > bestCount) {
-            bestCount = counts[m];
-            bestMidi = m;
-          }
-        }
-        targetMidi = bestMidi;
-      } else {
-        targetMidi = startLaneMidi;
-      }
-    }
-
     state.selectedNoteIndices = new Set(baseIndices || []);
     for (let k = 0; k < intersecting.length; k++) {
-      if (intersecting[k].midi === targetMidi) {
-        state.selectedNoteIndices.add(intersecting[k].index);
-      }
+      state.selectedNoteIndices.add(intersecting[k].index);
     }
 
     if (state.selectedNoteIndices.size > 0) {
@@ -2320,20 +2294,14 @@
         const tappedNote = state.song.notes[tappedIdx];
         if (!tappedNote) return;
 
-        // Seed from single selectedNoteIndex if set is empty and pitch matches
+        // Seed from single selectedNoteIndex if set is empty
         if (state.selectedNoteIndices.size === 0 && state.selectedNoteIndex >= 0 && state.selectedNoteIndex < state.song.notes.length) {
-          const prevNote = state.song.notes[state.selectedNoteIndex];
-          if (prevNote && prevNote.midi === tappedNote.midi && state.selectedNoteIndex !== tappedIdx) {
+          if (state.selectedNoteIndex !== tappedIdx) {
             state.selectedNoteIndices.add(state.selectedNoteIndex);
           }
         }
 
-        if (state.selectedNoteIndices.size === 0) {
-          state.selectedNoteIndices.add(tappedIdx);
-          state.selectedNoteIndex = tappedIdx;
-          audioEngine.playNote(tappedNote.midi, 0.35, tappedNote.velocity || 0.8);
-          syncEditorInspectorUI();
-        } else if (state.selectedNoteIndices.has(tappedIdx)) {
+        if (state.selectedNoteIndices.has(tappedIdx)) {
           state.selectedNoteIndices.delete(tappedIdx);
           if (state.selectedNoteIndices.size > 0) {
             const rem = Array.from(state.selectedNoteIndices);
@@ -2341,25 +2309,12 @@
           } else {
             state.selectedNoteIndex = -1;
           }
-          syncEditorInspectorUI();
         } else {
-          const firstIdx = state.selectedNoteIndices.values().next().value;
-          const firstNote = state.song.notes[firstIdx];
-          const targetMidi = firstNote ? firstNote.midi : tappedNote.midi;
-
-          if (tappedNote.midi !== targetMidi) {
-            syncEditorInspectorUI();
-            const labelEl = document.getElementById('inspectorNoteLabel');
-            if (labelEl) {
-              labelEl.textContent = 'Cannot group ' + (tappedNote.name || midiToName(tappedNote.midi)) + ' with ' + midiToName(targetMidi) + ' (must be same note)';
-            }
-          } else {
-            state.selectedNoteIndices.add(tappedIdx);
-            state.selectedNoteIndex = tappedIdx;
-            audioEngine.playNote(tappedNote.midi, 0.35, tappedNote.velocity || 0.8);
-            syncEditorInspectorUI();
-          }
+          state.selectedNoteIndices.add(tappedIdx);
+          state.selectedNoteIndex = tappedIdx;
+          audioEngine.playNote(tappedNote.midi, 0.35, tappedNote.velocity || 0.8);
         }
+        syncEditorInspectorUI();
         return;
       }
 
@@ -3290,6 +3245,51 @@
     });
   }
 
+  const editorSplitHandSelect = document.getElementById('editorSplitHandSelect');
+  const editorResplitHandsBtn = document.getElementById('editorResplitHandsBtn');
+
+  if (editorResplitHandsBtn) {
+    editorResplitHandsBtn.addEventListener('click', function () {
+      if (!state.song || !Array.isArray(state.song.notes) || state.song.notes.length === 0) return;
+      const modeVal = editorSplitHandSelect ? editorSplitHandSelect.value : 'auto';
+      const splitMidi = (modeVal !== 'auto') ? parseInt(modeVal, 10) : null;
+
+      pushUndoSnapshot();
+
+      const hasMultiSelection = state.selectedNoteIndices && state.selectedNoteIndices.size >= 2;
+      let targetNotes = state.song.notes;
+      if (hasMultiSelection) {
+        targetNotes = [];
+        state.selectedNoteIndices.forEach(function (idx) {
+          if (state.song.notes[idx]) targetNotes.push(state.song.notes[idx]);
+        });
+      }
+
+      if (splitMidi !== null && !isNaN(splitMidi)) {
+        for (let i = 0; i < targetNotes.length; i++) {
+          targetNotes[i].hand = (targetNotes[i].midi < splitMidi) ? 'L' : 'R';
+        }
+      } else if (typeof assignHandsSmart === 'function') {
+        assignHandsSmart(targetNotes);
+      }
+
+      let leftCount = 0;
+      let rightCount = 0;
+      for (let i = 0; i < targetNotes.length; i++) {
+        if (targetNotes[i].hand === 'L') leftCount++;
+        else rightCount++;
+      }
+
+      const keepRef = (!hasMultiSelection && state.selectedNoteIndex >= 0) ? state.song.notes[state.selectedNoteIndex] : null;
+      commitSongEdit(keepRef);
+      const labelEl = document.getElementById('inspectorNoteLabel');
+      if (labelEl) {
+        labelEl.classList.remove('suspect-active');
+        labelEl.textContent = '✓ Hands split: ' + leftCount + ' Left (Blue) • ' + rightCount + ' Right (Green)';
+      }
+    });
+  }
+
   function transposeSelectedNote(semitones) {
     if (!state.song || !Array.isArray(state.song.notes)) return;
     const indices = (state.selectedNoteIndices && state.selectedNoteIndices.size > 0)
@@ -3333,7 +3333,8 @@
         if (selectedNotes[i].midi !== targetMidi) {
           const labelEl = document.getElementById('inspectorNoteLabel');
           if (labelEl) {
-            labelEl.textContent = 'Cannot merge ' + midiToName(selectedNotes[i].midi) + ' with ' + midiToName(targetMidi) + ' (must be same note)';
+            labelEl.classList.add('suspect-active');
+            labelEl.textContent = '⚠ Only notes of the same pitch can be merged (' + midiToName(targetMidi) + ' and ' + midiToName(selectedNotes[i].midi) + ' selected)';
           }
           return;
         }
