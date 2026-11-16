@@ -2764,7 +2764,7 @@
     if (matchedSongs.length === 0) {
       const emptyEl = document.createElement('div');
       emptyEl.className = 'song-grid-empty';
-      emptyEl.textContent = 'No songs match this filter. Import a sheet music score, upload a .MID file, or convert an audio song with AI Audio!';
+      emptyEl.textContent = 'No songs match this filter. Upload a .MID file or convert an MP3 song with + Add Song!';
       homeSongGrid.appendChild(emptyEl);
       return;
     }

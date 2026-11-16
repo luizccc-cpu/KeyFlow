@@ -9,7 +9,7 @@
   <meta name="apple-mobile-web-app-title" content="KeyFlow" />
   <title>KeyFlow — 5-Second Horizon Virtual Piano</title>
   <link rel="manifest" href="manifest.json" />
-  <link rel="stylesheet" href="css/styles.css?v=4.5" />
+  <link rel="stylesheet" href="css/styles.css?v=4.6" />
 </head>
 <body>
   <div id="appShell">
@@ -32,7 +32,6 @@
 
           <div class="home-filter-group" role="tablist" aria-label="Filter songs by source">
             <button type="button" class="home-filter-btn active" data-filter="all">All Songs</button>
-            <button type="button" class="home-filter-btn" data-filter="sheet">Sheet Music</button>
             <button type="button" class="home-filter-btn" data-filter="ai">AI Audio</button>
             <button type="button" class="home-filter-btn" data-filter="midi">MIDI Uploads</button>
             <button type="button" class="home-filter-btn" data-filter="builtin">Built-In Classics</button>
@@ -48,7 +47,7 @@
           </div>
 
           <div class="home-actions-group">
-            <button id="homeAddSongBtn" type="button" class="ui-btn ui-btn-emerald" title="Add a song from Sheet Music, .MID file, or MP3 file" onclick="var m=document.getElementById('addSongModal');if(m){m.classList.add('open');m.setAttribute('aria-hidden','false');}">
+            <button id="homeAddSongBtn" type="button" class="ui-btn ui-btn-emerald" title="Add a song from a .MID file or MP3 audio file" onclick="var m=document.getElementById('addSongModal');if(m){m.classList.add('open');m.setAttribute('aria-hidden','false');}">
               <span>+ Add Song</span>
             </button>
             <button id="exportLibraryBtn" type="button" class="ui-btn" title="Export all custom and edited songs as a single .keyflow.json backup file">⬇ Backup Library</button>
@@ -458,9 +457,6 @@
         </div>
 
         <div class="modal-body add-song-choice-list">
-          <button id="homeOpenSheetModalBtn" type="button" class="ui-btn ui-btn-amber add-song-choice-btn" title="Import Sheet Music (.MusicXML, .MXL, .PDF, .PNG, .JPG)" onclick="var m=document.getElementById('addSongModal');if(m){m.classList.remove('open');m.setAttribute('aria-hidden','true');}">
-            <span>Add Sheet Music</span>
-          </button>
           <label for="midiInput" id="homeOpenMidiBtn" class="ui-btn ui-btn-accent add-song-choice-btn" title="Upload a Standard .MID or .MIDI file" onclick="var m=document.getElementById('addSongModal');if(m){m.classList.remove('open');m.setAttribute('aria-hidden','true');}">
             <span>Add .MID File</span>
           </label>
@@ -624,11 +620,11 @@
   </div>
 
   <!-- Modular Application Scripts (Zero Build Step Required) -->
-  <script src="js/songs.js?v=4.5"></script>
-  <script src="js/midi-parser.js?v=4.5"></script>
-  <script src="js/audio-transcriber.js?v=4.5"></script>
-  <script src="js/audio.js?v=4.5"></script>
-  <script src="js/sheet-music-importer.js?v=4.5"></script>
-  <script src="js/app.js?v=4.5"></script>
+  <script src="js/songs.js?v=4.6"></script>
+  <script src="js/midi-parser.js?v=4.6"></script>
+  <script src="js/audio-transcriber.js?v=4.6"></script>
+  <script src="js/audio.js?v=4.6"></script>
+  <script src="js/sheet-music-importer.js?v=4.6"></script>
+  <script src="js/app.js?v=4.6"></script>
 </body>
 </html>
