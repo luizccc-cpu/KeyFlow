@@ -1854,3 +1854,206 @@ html, body {
   font-size: 14px;
   font-weight: 700;
 }
+
+/* ==================== PRACTICE HUD POLISH (STEP 1) ==================== */
+.speed-stepper {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.speed-step-btn {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.06);
+  color: #cbd5e1;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.14s ease, color 0.14s ease, border-color 0.14s ease;
+  padding: 0;
+}
+
+.speed-step-btn:hover {
+  background: rgba(255, 255, 255, 0.16);
+  color: #ffffff;
+  border-color: rgba(255, 255, 255, 0.28);
+}
+
+.speed-step-btn:active {
+  transform: scale(0.94);
+}
+
+.tempo-pills-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.tempo-pill {
+  height: 28px;
+  padding: 0 8px;
+  border-radius: 7px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.05);
+  color: #cbd5e1;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.tempo-pill:hover {
+  background: rgba(255, 255, 255, 0.11);
+  color: #f8fafc;
+}
+
+.tempo-pill.active {
+  background: rgba(56, 189, 248, 0.22);
+  border-color: rgba(56, 189, 248, 0.65);
+  color: #7dd3fc;
+}
+
+.sound-header-left {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.sound-active-name {
+  font-size: 11px;
+  font-weight: 500;
+  color: #94a3b8;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ==================== HOME SCREEN POLISH (STEP 2) ==================== */
+.home-more-wrap {
+  position: relative;
+}
+
+.home-more-menu {
+  display: none;
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 176px;
+  background: rgba(15, 23, 42, 0.96);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 11px;
+  padding: 5px;
+  box-shadow: 0 14px 32px rgba(0, 0, 0, 0.6);
+  z-index: 90;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.home-more-menu.open {
+  display: flex;
+}
+
+.home-more-item {
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 7px;
+  border: none;
+  background: transparent;
+  color: #e2e8f0;
+  font-size: 12.5px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.home-more-item:hover {
+  background: rgba(56, 189, 248, 0.16);
+  color: #ffffff;
+}
+
+.song-badge.diff-easy {
+  background: rgba(52, 211, 153, 0.14);
+  color: #6ee7b7;
+  border: 1px solid rgba(52, 211, 153, 0.32);
+}
+
+.song-badge.diff-mid {
+  background: rgba(56, 189, 248, 0.14);
+  color: #7dd3fc;
+  border: 1px solid rgba(56, 189, 248, 0.32);
+}
+
+.song-badge.diff-hard {
+  background: rgba(245, 158, 11, 0.16);
+  color: #fcd34d;
+  border: 1px solid rgba(245, 158, 11, 0.36);
+}
+
+.song-badge.acc-best {
+  background: rgba(16, 185, 129, 0.2);
+  color: #34d399;
+  border: 1px solid rgba(52, 211, 153, 0.45);
+}
+
+.home-drop-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  background: rgba(10, 14, 23, 0.82);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.home-drop-overlay.visible {
+  display: flex;
+}
+
+.home-drop-card {
+  border: 2px dashed rgba(56, 189, 248, 0.75);
+  background: rgba(15, 23, 42, 0.92);
+  border-radius: 20px;
+  padding: 36px 48px;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.65);
+}
+
+.home-drop-icon {
+  font-size: 38px;
+  line-height: 1;
+}
+
+.home-drop-card strong {
+  font-size: 18px;
+  color: #f8fafc;
+}
+
+.home-drop-card span {
+  font-size: 13px;
+  color: #94a3b8;
+}

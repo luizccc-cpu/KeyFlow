@@ -1055,6 +1055,9 @@
   }
 
   function setPlaying(play) {
+    if (play && !state.hudMinimized && typeof setHudMinimized === 'function') {
+      setHudMinimized(true);
+    }
     if (play && state.countInOn && !state.isCountingIn) {
       runCountIn(function () {
         doSetPlaying(true);
@@ -1123,6 +1126,30 @@
   /********************************************************************
    * PHASE 4B: LIVE ACCURACY TRACKING & WRONG NOTE FLASHES
    ********************************************************************/
+  const BEST_ACCURACY_STORAGE_KEY = 'keyflow_best_accuracy_v1';
+
+  function loadBestAccuracyMap() {
+    try {
+      const raw = window.localStorage && window.localStorage.getItem(BEST_ACCURACY_STORAGE_KEY);
+      return raw ? JSON.parse(raw) : {};
+    } catch (_) {
+      return {};
+    }
+  }
+
+  function recordSongBestAccuracy(songId, pct) {
+    if (!songId || !Number.isFinite(pct)) return;
+    try {
+      const map = loadBestAccuracyMap();
+      if (typeof map[songId] !== 'number' || pct > map[songId]) {
+        map[songId] = pct;
+        if (window.localStorage) {
+          window.localStorage.setItem(BEST_ACCURACY_STORAGE_KEY, JSON.stringify(map));
+        }
+      }
+    } catch (_) {}
+  }
+
   function updateAccuracyUI() {
     const pill = document.getElementById('accuracyHudPill');
     const pctEl = document.getElementById('accuracyPctText');
@@ -1139,6 +1166,9 @@
     const pct = Math.round((state.stats.hits / total) * 100);
     pctEl.textContent = pct + '%';
     streakEl.textContent = state.stats.streak + ' streak';
+    if (total >= 8 && state.song && state.song.id) {
+      recordSongBestAccuracy(state.song.id, pct);
+    }
   }
 
   function resetAccuracyStats() {
@@ -2504,10 +2534,40 @@
     return 'builtin';
   }
 
+  function computeSongRangeLabel(notes) {
+    if (!Array.isArray(notes) || notes.length === 0) return '';
+    let minM = 127;
+    let maxM = 0;
+    for (let i = 0; i < notes.length; i++) {
+      const m = notes[i] && notes[i].midi;
+      if (typeof m === 'number') {
+        if (m < minM) minM = m;
+        if (m > maxM) maxM = m;
+      }
+    }
+    if (minM > maxM) return '';
+    const fmt = function (midi) {
+      const n = NOTE_NAMES_CHORD[((midi % 12) + 12) % 12];
+      const oct = Math.floor(midi / 12) - 1;
+      return n + oct;
+    };
+    return fmt(minM) + '–' + fmt(maxM);
+  }
+
+  function estimateSongDifficulty(song) {
+    const notes = song && Array.isArray(song.notes) ? song.notes : [];
+    const dur = Math.max(1, song && song.duration ? song.duration : 1);
+    const nps = notes.length / dur;
+    if (nps < 2.2) return { label: 'Easy', cls: 'diff-easy' };
+    if (nps < 4.5) return { label: 'Intermediate', cls: 'diff-mid' };
+    return { label: 'Challenging', cls: 'diff-hard' };
+  }
+
   function renderHomeSongGrid() {
     if (!homeSongGrid) return;
     syncHomeLayoutToggleUI();
     homeSongGrid.innerHTML = '';
+    const bestAccMap = loadBestAccuracyMap();
 
     const allIds = Object.keys(SONGS);
     const customList = [];
@@ -2622,10 +2682,27 @@
         badgesRow.appendChild(editBadge);
       }
 
+      const diff = estimateSongDifficulty(s);
+      const diffBadge = document.createElement('span');
+      diffBadge.className = 'song-badge ' + diff.cls;
+      diffBadge.textContent = diff.label;
+      badgesRow.appendChild(diffBadge);
+
+      if (typeof bestAccMap[s.id] === 'number') {
+        const accBadge = document.createElement('span');
+        accBadge.className = 'song-badge acc-best';
+        accBadge.textContent = 'Best ' + bestAccMap[s.id] + '%';
+        badgesRow.appendChild(accBadge);
+      }
+
       const metaEl = document.createElement('div');
       metaEl.className = 'song-card-meta';
       const bpmNum = Math.round(s.bpm || 120);
-      metaEl.textContent = formatTime(s.duration) + ' • ' + s.notes.length + ' notes • ' + bpmNum + ' BPM';
+      const rangeLabel = computeSongRangeLabel(s.notes);
+      metaEl.textContent = formatTime(s.duration)
+        + ' • ' + s.notes.length + ' notes'
+        + ' • ' + bpmNum + ' BPM'
+        + (rangeLabel ? ' • ' + rangeLabel : '');
 
       const actionsRow = document.createElement('div');
       actionsRow.className = 'song-card-actions';
@@ -3274,8 +3351,7 @@
     rebuildKeyboardGeometry();
   });
 
-  document.getElementById('midiInput').addEventListener('change', function (e) {
-    const file = e.target.files && e.target.files[0];
+  function importMidiFile(file) {
     if (!file) return;
     const reader = new FileReader();
     reader.onload = function (ev) {
@@ -3298,6 +3374,12 @@
       }
     };
     reader.readAsArrayBuffer(file);
+  }
+
+  document.getElementById('midiInput').addEventListener('change', function (e) {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    importMidiFile(file);
     e.target.value = '';
   });
 
@@ -3337,21 +3419,38 @@
     });
   }
 
-  const SPEEDS = [0.5, 0.75, 1.0, 1.25, 1.5];
-  document.getElementById('speedBtn').addEventListener('click', function (e) {
-    let nextIdx = 0;
-    for (let i = 0; i < SPEEDS.length; i++) {
-      if (SPEEDS[i] > state.speed + 0.01) {
-        nextIdx = i;
-        break;
-      }
-    }
-    state.speed = SPEEDS[nextIdx];
+  function applyPlaybackSpeed(nextSpeed) {
+    const clamped = Math.max(0.25, Math.min(1.5, Math.round(nextSpeed * 20) / 20));
+    state.speed = clamped;
     const speedStr = formatSpeedBadge(state.speed);
-    e.currentTarget.textContent = speedStr;
+    const speedBtnEl = document.getElementById('speedBtn');
+    if (speedBtnEl) speedBtnEl.textContent = speedStr;
     if (hudMiniSummary) hudMiniSummary.textContent = speedStr;
     syncLoopUI();
-  });
+  }
+
+  const speedBtnEl = document.getElementById('speedBtn');
+  if (speedBtnEl) {
+    speedBtnEl.addEventListener('click', function () {
+      // Tap center pill: jump back to 1.0x if modified, or toggle to 0.75x practice speed
+      const target = Math.abs(state.speed - 1.0) > 0.01 ? 1.0 : 0.75;
+      applyPlaybackSpeed(target);
+    });
+  }
+
+  const speedDownBtn = document.getElementById('speedDownBtn');
+  if (speedDownBtn) {
+    speedDownBtn.addEventListener('click', function () {
+      applyPlaybackSpeed(state.speed - 0.05);
+    });
+  }
+
+  const speedUpBtn = document.getElementById('speedUpBtn');
+  if (speedUpBtn) {
+    speedUpBtn.addEventListener('click', function () {
+      applyPlaybackSpeed(state.speed + 0.05);
+    });
+  }
 
   // Metronome & Count-In Buttons
   const metronomeBtn = document.getElementById('metronomeBtn');
@@ -3359,8 +3458,6 @@
     metronomeBtn.addEventListener('click', function () {
       state.metronomeOn = !state.metronomeOn;
       metronomeBtn.classList.toggle('active', state.metronomeOn);
-      metronomeBtn.style.color = state.metronomeOn ? '#38bdf8' : '';
-      metronomeBtn.style.borderColor = state.metronomeOn ? 'rgba(56, 189, 248, 0.6)' : '';
     });
   }
 
@@ -3369,8 +3466,6 @@
     countInBtn.addEventListener('click', function () {
       state.countInOn = !state.countInOn;
       countInBtn.classList.toggle('active', state.countInOn);
-      countInBtn.style.color = state.countInOn ? '#38bdf8' : '';
-      countInBtn.style.borderColor = state.countInOn ? 'rgba(56, 189, 248, 0.6)' : '';
     });
   }
 
@@ -3458,6 +3553,13 @@
     chev.style.transform = hidden ? 'rotate(0deg)' : 'rotate(-90deg)';
   });
 
+  const PRESET_SHORT_LABELS = {
+    acoustic_grand: 'Acoustic Grand',
+    mellow_felt: 'Mellow Felt',
+    warm_upright: 'Vintage Upright',
+    electric_piano: 'Electric Piano'
+  };
+
   const presetBtns = document.querySelectorAll('.sound-option-btn');
   presetBtns.forEach(function (btn) {
     btn.addEventListener('click', function () {
@@ -3466,6 +3568,11 @@
 
       document.getElementById('warmthSlider').value = audioEngine.warmth;
       document.getElementById('warmthLabel').textContent = audioEngine.warmth + '%';
+
+      const activeNameEl = document.getElementById('soundActiveName');
+      if (activeNameEl && PRESET_SHORT_LABELS[preset]) {
+        activeNameEl.textContent = PRESET_SHORT_LABELS[preset];
+      }
 
       presetBtns.forEach(function (b) {
         b.classList.toggle('selected', b === btn);
@@ -3820,6 +3927,83 @@
       if (isTranscribing) return;
       const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
       if (f) updateSelectedAudioFile(f);
+    });
+  }
+
+  // Home Screen Overflow Menu (Backup / Restore)
+  const homeMoreMenuBtn = document.getElementById('homeMoreMenuBtn');
+  const homeMoreMenu = document.getElementById('homeMoreMenu');
+  if (homeMoreMenuBtn && homeMoreMenu) {
+    const closeHomeMoreMenu = function () {
+      homeMoreMenu.classList.remove('open');
+      homeMoreMenuBtn.setAttribute('aria-expanded', 'false');
+    };
+    homeMoreMenuBtn.addEventListener('click', function (e) {
+      e.stopPropagation();
+      const willOpen = !homeMoreMenu.classList.contains('open');
+      homeMoreMenu.classList.toggle('open', willOpen);
+      homeMoreMenuBtn.setAttribute('aria-expanded', willOpen ? 'true' : 'false');
+    });
+    homeMoreMenu.addEventListener('click', function () {
+      closeHomeMoreMenu();
+    });
+    document.addEventListener('click', function (e) {
+      if (!homeMoreMenu.contains(e.target) && e.target !== homeMoreMenuBtn) {
+        closeHomeMoreMenu();
+      }
+    });
+  }
+
+  // Home Screen Drag-and-Drop (.MID or Audio files)
+  const homeViewEl = document.getElementById('homeView');
+  const homeDropOverlay = document.getElementById('homeDropOverlay');
+  if (homeViewEl && homeDropOverlay) {
+    let homeDragDepth = 0;
+    const isFileDrag = function (e) {
+      const types = e.dataTransfer && e.dataTransfer.types;
+      if (!types) return false;
+      for (let i = 0; i < types.length; i++) {
+        if (types[i] === 'Files') return true;
+      }
+      return false;
+    };
+    const setDropOverlayVisible = function (show) {
+      homeDropOverlay.classList.toggle('visible', !!show);
+      homeDropOverlay.setAttribute('aria-hidden', show ? 'false' : 'true');
+    };
+
+    homeViewEl.addEventListener('dragenter', function (e) {
+      if (!isFileDrag(e)) return;
+      e.preventDefault();
+      homeDragDepth++;
+      setDropOverlayVisible(true);
+    });
+    homeViewEl.addEventListener('dragover', function (e) {
+      if (!isFileDrag(e)) return;
+      e.preventDefault();
+    });
+    homeViewEl.addEventListener('dragleave', function (e) {
+      if (!isFileDrag(e)) return;
+      homeDragDepth = Math.max(0, homeDragDepth - 1);
+      if (homeDragDepth === 0) setDropOverlayVisible(false);
+    });
+    homeViewEl.addEventListener('drop', function (e) {
+      if (!isFileDrag(e)) return;
+      e.preventDefault();
+      homeDragDepth = 0;
+      setDropOverlayVisible(false);
+      const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+      if (!f) return;
+      const lower = String(f.name || '').toLowerCase();
+      if (lower.endsWith('.mid') || lower.endsWith('.midi')) {
+        importMidiFile(f);
+      } else if (
+        (f.type && f.type.indexOf('audio/') === 0) ||
+        /\.(mp3|wav|m4a|aac|ogg|flac)$/i.test(lower)
+      ) {
+        setTranscriberModalOpen(true);
+        updateSelectedAudioFile(f);
+      }
     });
   }
 

@@ -9,7 +9,7 @@
   <meta name="apple-mobile-web-app-title" content="KeyFlow" />
   <title>KeyFlow — 5-Second Horizon Virtual Piano</title>
   <link rel="manifest" href="manifest.json" />
-  <link rel="stylesheet" href="css/styles.css?v=4.7" />
+  <link rel="stylesheet" href="css/styles.css?v=4.8" />
 </head>
 <body>
   <div id="appShell">
@@ -50,14 +50,28 @@
             <button id="homeAddSongBtn" type="button" class="ui-btn ui-btn-emerald" title="Add a song from a .MID file or MP3 audio file" onclick="var m=document.getElementById('addSongModal');if(m){m.classList.add('open');m.setAttribute('aria-hidden','false');}">
               <span>+ Add Song</span>
             </button>
-            <button id="exportLibraryBtn" type="button" class="ui-btn" title="Export all custom and edited songs as a single .keyflow.json backup file">⬇ Backup Library</button>
-            <label for="importLibraryInput" id="importLibraryBtn" class="ui-btn" title="Restore or merge songs from a .keyflow.json backup file">⬆ Restore Library</label>
+            <div class="home-more-wrap">
+              <button id="homeMoreMenuBtn" type="button" class="ui-btn icon-btn" title="Library Backup &amp; Restore" aria-label="More Library Actions" aria-haspopup="true" aria-expanded="false">⋯</button>
+              <div id="homeMoreMenu" class="home-more-menu" role="menu">
+                <button id="exportLibraryBtn" type="button" class="home-more-item" role="menuitem" title="Export all custom and edited songs as a single .keyflow.json backup file">⬇ Backup Library</button>
+                <label for="importLibraryInput" id="importLibraryBtn" class="home-more-item" role="menuitem" title="Restore or merge songs from a .keyflow.json backup file">⬆ Restore Library</label>
+              </div>
+            </div>
             <input id="importLibraryInput" type="file" accept=".json,.keyflow.json" style="display:none;" />
           </div>
         </div>
       </div>
 
       <div id="homeSongGrid" class="home-song-grid"></div>
+
+      <!-- Full-Screen Drag & Drop Overlay for Home Library -->
+      <div id="homeDropOverlay" class="home-drop-overlay" aria-hidden="true">
+        <div class="home-drop-card">
+          <div class="home-drop-icon">🎹</div>
+          <strong>Drop to add to KeyFlow</strong>
+          <span>Supports .MID files and audio tracks (.MP3, .WAV, .M4A, .OGG)</span>
+        </div>
+      </div>
     </section>
 
     <!-- ==================== TOP BAR (PLAY & EDIT MODES) ==================== -->
@@ -145,13 +159,6 @@
       <div class="hud-row" style="font-size:12px;">
         <span>Show All Key Names</span>
         <button id="allKeyLabelsSwitch" class="switch-btn" aria-label="Toggle All Key Labels">
-          <span class="switch-thumb"></span>
-        </button>
-      </div>
-
-      <div class="hud-row" style="font-size:12px;">
-        <span>A–B Loop Speed Ramp (+5%)</span>
-        <button id="speedRampSwitch" class="switch-btn" aria-label="Toggle Loop Speed Ramp">
           <span class="switch-thumb"></span>
         </button>
       </div>
@@ -296,7 +303,11 @@
               </svg>
               <span>Speed</span>
             </div>
-            <button id="speedBtn" class="speed-pill" title="Click to cycle playback speed">1.0x</button>
+            <div class="speed-stepper">
+              <button id="speedDownBtn" type="button" class="speed-step-btn" title="Slow down (-5%)" aria-label="Decrease playback speed">−</button>
+              <button id="speedBtn" type="button" class="speed-pill" title="Tap to reset to 1.0x (or switch to 0.75x)">1.0x</button>
+              <button id="speedUpBtn" type="button" class="speed-step-btn" title="Speed up (+5%)" aria-label="Increase playback speed">+</button>
+            </div>
           </div>
 
           <!-- Wait Mode Row -->
@@ -327,30 +338,25 @@
           </div>
 
           <!-- Metronome & Count-In Row -->
-          <div class="hud-row" style="font-size:12px;">
-            <div class="hud-label">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:#cbd5e1;">
-                <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
-              </svg>
-              <span>Tempo Beat</span>
-            </div>
-            <div style="display:flex; align-items:center; gap:5px;">
-              <button id="metronomeBtn" type="button" class="ui-btn" style="padding:3px 8px; font-size:11px;" title="Toggle Audible Beat Metronome">⏱ Metronome</button>
-              <button id="countInBtn" type="button" class="ui-btn" style="padding:3px 8px; font-size:11px;" title="4-Beat Count-In before Play or Loop Restart">1-2-3-4 Count-In</button>
-            </div>
+          <div class="tempo-pills-row">
+            <button id="metronomeBtn" type="button" class="tempo-pill" title="Toggle Audible Beat Metronome">⏱ Metronome</button>
+            <button id="countInBtn" type="button" class="tempo-pill" title="4-Beat Count-In before Play or Loop Restart">1-2-3-4 Count-In</button>
           </div>
 
           <div class="hud-divider"></div>
 
-          <!-- Sound Preset Selector (Matching iPad Mockup) -->
+          <!-- Sound Preset Selector (Collapsed by default to keep bass notes visible) -->
           <button id="soundCollapseBtn" class="sound-header-btn">
-            <span>Sound</span>
-            <svg id="soundChevron" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="color:#94a3b8; transition: transform 0.2s;">
+            <span class="sound-header-left">
+              <span>Sound</span>
+              <span id="soundActiveName" class="sound-active-name">Acoustic Grand</span>
+            </span>
+            <svg id="soundChevron" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="color:#94a3b8; transition: transform 0.2s; transform: rotate(-90deg);">
               <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/>
             </svg>
           </button>
 
-          <div id="soundSectionBody" style="display:flex; flex-direction:column; gap:9px;">
+          <div id="soundSectionBody" style="display:none; flex-direction:column; gap:9px;">
             <div class="sound-list-box">
               <button class="sound-option-btn selected" data-preset="acoustic_grand">
                 <span class="check-mark">✓</span>
@@ -549,10 +555,10 @@
   </div>
 
   <!-- Modular Application Scripts (Zero Build Step Required) -->
-  <script src="js/songs.js?v=4.7"></script>
-  <script src="js/midi-parser.js?v=4.7"></script>
-  <script src="js/audio-transcriber.js?v=4.7"></script>
-  <script src="js/audio.js?v=4.7"></script>
-  <script src="js/app.js?v=4.7"></script>
+  <script src="js/songs.js?v=4.8"></script>
+  <script src="js/midi-parser.js?v=4.8"></script>
+  <script src="js/audio-transcriber.js?v=4.8"></script>
+  <script src="js/audio.js?v=4.8"></script>
+  <script src="js/app.js?v=4.8"></script>
 </body>
 </html>
