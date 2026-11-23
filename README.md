@@ -37,7 +37,6 @@ KeyFlow comes with five classics ready to play (*Let It Be*, *Imagine*, *Clair d
 
 * **MIDI files (`.mid`)** — Drop in any MIDI file and KeyFlow automatically splits it into playable left- and right-hand parts.
 * **Audio tracks (`.mp3`, `.wav`, `.m4a`)** — Turn a regular song recording into falling piano notes right in the browser (or connect the optional AI transcription server for even cleaner results).
-* **Sheet music (`.musicxml`, `.mxl`, `.pdf`, or photos)** — Import digital scores instantly or scan printed sheet music into falling notes.
 
 Everything you import or edit stays saved in your browser, and you can back up your whole library to a single file anytime.
 
