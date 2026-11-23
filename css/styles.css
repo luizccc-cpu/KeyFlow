@@ -1757,13 +1757,17 @@ html, body {
 }
 
 .note-inspector-bar {
-  display: flex;
+  display: none;
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding-top: 5px;
+  padding-top: 6px;
   border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.note-inspector-bar.visible {
+  display: flex;
 }
 
 .inspector-note-label {
@@ -2056,4 +2060,175 @@ html, body {
 .home-drop-card span {
   font-size: 13px;
   color: #94a3b8;
+}
+
+/* ==================== EDITOR TOOLBAR POPOVER (STEP 3) ==================== */
+.editor-tools-wrap {
+  position: relative;
+  margin-left: auto;
+}
+
+.editor-tools-popover {
+  display: none;
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  width: 300px;
+  background: rgba(15, 23, 42, 0.97);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 13px;
+  padding: 12px;
+  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.65);
+  z-index: 95;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.editor-tools-popover.open {
+  display: flex;
+}
+
+.editor-tools-section {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.editor-tools-heading {
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #94a3b8;
+}
+
+.editor-tools-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.editor-tools-row .ui-btn,
+.editor-tools-row .ui-select {
+  font-size: 12px;
+  padding: 5px 9px;
+}
+
+/* ==================== ADD SONG & TRANSCRIBER MODAL POLISH (STEP 4) ==================== */
+.add-song-modal-card {
+  max-width: 440px;
+}
+
+.add-song-card-btn {
+  width: 100%;
+  padding: 14px 16px;
+  border-radius: 13px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(30, 41, 59, 0.62);
+  color: #f8fafc;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  text-align: left;
+  cursor: pointer;
+  transition: transform 0.14s ease, border-color 0.14s ease, background 0.14s ease;
+  box-sizing: border-box;
+}
+
+.add-song-card-btn:hover {
+  transform: translateY(-1px);
+  background: rgba(30, 41, 59, 0.92);
+}
+
+.add-song-card-btn.card-midi:hover {
+  border-color: rgba(56, 189, 248, 0.65);
+}
+
+.add-song-card-btn.card-audio:hover {
+  border-color: rgba(52, 211, 153, 0.65);
+}
+
+.add-song-card-icon {
+  width: 42px;
+  height: 42px;
+  border-radius: 11px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  flex-shrink: 0;
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.add-song-card-btn.card-midi .add-song-card-icon {
+  background: rgba(56, 189, 248, 0.16);
+}
+
+.add-song-card-btn.card-audio .add-song-card-icon {
+  background: rgba(52, 211, 153, 0.16);
+}
+
+.add-song-card-text {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.add-song-card-text strong {
+  font-size: 14px;
+  font-weight: 700;
+  color: #f8fafc;
+}
+
+.add-song-card-text span {
+  font-size: 12px;
+  color: #94a3b8;
+  line-height: 1.35;
+}
+
+.advanced-server-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.advanced-server-toggle {
+  width: 100%;
+  padding: 8px 11px;
+  border-radius: 9px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.04);
+  color: #cbd5e1;
+  font-size: 12px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+  transition: background 0.14s ease, color 0.14s ease, border-color 0.14s ease;
+}
+
+.advanced-server-toggle:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #f8fafc;
+  border-color: rgba(255, 255, 255, 0.18);
+}
+
+.advanced-server-toggle .adv-chevron {
+  display: inline-block;
+  margin-right: 4px;
+  transition: transform 0.18s ease;
+}
+
+.advanced-server-toggle.open .adv-chevron {
+  transform: rotate(90deg);
+}
+
+.advanced-server-toggle .adv-hint {
+  font-size: 11px;
+  font-weight: 500;
+  color: #64748b;
 }

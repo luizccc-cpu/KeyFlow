@@ -1513,6 +1513,7 @@
   }
 
   function syncEditorInspectorUI() {
+    const inspectorBar = document.getElementById('noteInspectorBar');
     const labelEl = document.getElementById('inspectorNoteLabel');
     const mergeBtn = document.getElementById('inspectorMergeBtn');
     const cloneBtn = document.getElementById('inspectorCloneBtn');
@@ -1545,8 +1546,12 @@
 
     const idx = state.selectedNoteIndex;
     const note = (idx >= 0 && idx < state.song.notes.length) ? state.song.notes[idx] : null;
+    const hasSelection = !!(note || groupCount > 0);
+    if (inspectorBar) {
+      inspectorBar.classList.toggle('visible', hasSelection);
+    }
 
-    if (!note && groupCount === 0) {
+    if (!hasSelection) {
       state.isCloningNote = false;
       if (labelEl) {
         labelEl.classList.remove('suspect-active');
@@ -1708,9 +1713,11 @@
   }
 
   function analyzeSongConfidence(song) {
+    const suspectGroup = document.getElementById('editorSuspectGroup');
     const toggleBtn = document.getElementById('editorSuspectToggleBtn');
     const nextBtn = document.getElementById('editorNextSuspectBtn');
     const updateSuspectButtons = function (count) {
+      if (suspectGroup) suspectGroup.style.display = count > 0 ? 'flex' : 'none';
       if (toggleBtn) toggleBtn.textContent = '⚠ Suspect (' + count + ')';
       if (nextBtn) nextBtn.disabled = (count === 0);
     };
@@ -4007,10 +4014,69 @@
     });
   }
 
+  // Editor Batch Tools Popover (Step 3)
+  const editorToolsToggleBtn = document.getElementById('editorToolsToggleBtn');
+  const editorToolsPopover = document.getElementById('editorToolsPopover');
+  if (editorToolsToggleBtn && editorToolsPopover) {
+    const closeEditorToolsPopover = function () {
+      editorToolsPopover.classList.remove('open');
+      editorToolsToggleBtn.classList.remove('active');
+      editorToolsToggleBtn.setAttribute('aria-expanded', 'false');
+    };
+    editorToolsToggleBtn.addEventListener('click', function (e) {
+      e.stopPropagation();
+      const willOpen = !editorToolsPopover.classList.contains('open');
+      editorToolsPopover.classList.toggle('open', willOpen);
+      editorToolsToggleBtn.classList.toggle('active', willOpen);
+      editorToolsToggleBtn.setAttribute('aria-expanded', willOpen ? 'true' : 'false');
+    });
+    editorToolsPopover.addEventListener('click', function (e) {
+      e.stopPropagation();
+    });
+    document.addEventListener('click', function (e) {
+      if (!editorToolsPopover.contains(e.target) && e.target !== editorToolsToggleBtn) {
+        closeEditorToolsPopover();
+      }
+    });
+  }
+
+  // Collapsible Advanced AI Server Config (Step 4)
+  const advancedServerWrap = document.getElementById('advancedServerWrap');
+  const advancedServerToggleBtn = document.getElementById('advancedServerToggleBtn');
+  let advancedServerExpanded = false;
+
+  function syncAdvancedServerUI() {
+    if (!serverConfigBox) return;
+    const mode = transcribeModeSelect ? transcribeModeSelect.value : 'auto';
+    if (mode === 'browser') {
+      if (advancedServerWrap) advancedServerWrap.style.display = 'none';
+      serverConfigBox.style.display = 'none';
+      return;
+    }
+    if (advancedServerWrap) advancedServerWrap.style.display = 'flex';
+    const shouldShowBox = (mode === 'server') || advancedServerExpanded;
+    serverConfigBox.style.display = shouldShowBox ? 'flex' : 'none';
+    if (advancedServerToggleBtn) {
+      advancedServerToggleBtn.classList.toggle('open', shouldShowBox);
+      advancedServerToggleBtn.setAttribute('aria-expanded', shouldShowBox ? 'true' : 'false');
+    }
+  }
+
+  if (advancedServerToggleBtn) {
+    advancedServerToggleBtn.addEventListener('click', function () {
+      advancedServerExpanded = !advancedServerExpanded;
+      syncAdvancedServerUI();
+    });
+  }
+
   if (transcribeModeSelect && serverConfigBox) {
     transcribeModeSelect.addEventListener('change', function () {
-      serverConfigBox.style.display = (transcribeModeSelect.value === 'browser') ? 'none' : 'flex';
+      if (transcribeModeSelect.value === 'server') {
+        advancedServerExpanded = true;
+      }
+      syncAdvancedServerUI();
     });
+    syncAdvancedServerUI();
   }
 
   if (transcribeSensitivitySlider && transcribeSensitivityLabel) {

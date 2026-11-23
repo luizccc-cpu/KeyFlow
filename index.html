@@ -9,7 +9,7 @@
   <meta name="apple-mobile-web-app-title" content="KeyFlow" />
   <title>KeyFlow — 5-Second Horizon Virtual Piano</title>
   <link rel="manifest" href="manifest.json" />
-  <link rel="stylesheet" href="css/styles.css?v=4.8" />
+  <link rel="stylesheet" href="css/styles.css?v=4.9" />
 </head>
 <body>
   <div id="appShell">
@@ -192,13 +192,13 @@
       <!-- ==================== PHASE 4A: INTERACTIVE VISUAL NOTE EDITOR TOOLBAR ==================== -->
       <div id="editorToolbar" class="editor-toolbar" style="display:none;">
         <div class="editor-toolbar-row">
-          <!-- Tool Mode Buttons -->
+          <!-- Core Tool Mode Buttons -->
           <div class="editor-group">
             <button id="toolSelectBtn" type="button" class="ui-btn editor-tool-btn active" data-tool="select" title="Select, Move (Pitch/Time), or Drag Top Edge to Resize Length">
               <span>↖ Select / Resize</span>
             </button>
             <button id="toolGroupBtn" type="button" class="ui-btn editor-tool-btn" data-tool="group" title="Select multiple notes (tap notes or drag a box) to flip hands, transpose, delete, or merge same-pitch notes">☑ Group Select</button>
-            <button id="toolAddBtn" type="button" class="ui-btn editor-tool-btn" data-tool="add" title="Tap & drag upward on any key lane to draw a new note">
+            <button id="toolAddBtn" type="button" class="ui-btn editor-tool-btn" data-tool="add" title="Tap &amp; drag upward on any key lane to draw a new note">
               <span>＋ Add Note</span>
             </button>
             <button id="toolDeleteBtn" type="button" class="ui-btn editor-tool-btn" data-tool="delete" title="Tap any note to delete it immediately">
@@ -219,43 +219,63 @@
             <button id="editorRedoBtn" type="button" class="ui-btn" title="Redo (Ctrl+Y / Cmd+Shift+Z)" disabled>↷ Redo</button>
           </div>
 
-          <!-- BPM & Measure Grid Alignment -->
-          <div class="editor-group">
-            <span class="editor-mini-label">BPM</span>
-            <input id="editorBpmInput" type="number" min="40" max="240" step="1" value="120" class="editor-num-input" title="Song Tempo (BPM)" />
-            <button id="editorGridLeftBtn" type="button" class="ui-btn" title="Shift Bar 1 Grid Earlier (-0.05s)">Bar ◀</button>
-            <button id="editorGridRightBtn" type="button" class="ui-btn" title="Shift Bar 1 Grid Later (+0.05s)">Bar ▶</button>
-          </div>
-
-          <!-- Confidence & Gentle Quantize Controls -->
-          <div class="editor-group">
+          <!-- Suspect Notes (Hidden automatically when count is 0) -->
+          <div id="editorSuspectGroup" class="editor-group" style="display:none;">
             <button id="editorSuspectToggleBtn" type="button" class="ui-btn editor-suspect-btn active" title="Highlight low-confidence / suspect transcription notes on the runway">
               ⚠ Suspect (0)
             </button>
             <button id="editorNextSuspectBtn" type="button" class="ui-btn" title="Jump to and audition the next suspect note (Shortcut: N)" disabled>
               Next ⚠
             </button>
-            <button id="editorSnapAllBtn" type="button" class="ui-btn" title="Gently snap nearby note starts onto the active beat grid">
-              ⌗ Snap Grid
+          </div>
+
+          <!-- Batch & Alignment Tools Popover -->
+          <div class="editor-tools-wrap">
+            <button id="editorToolsToggleBtn" type="button" class="ui-btn" title="BPM, Bar Alignment, Snap Grid, Legato &amp; Hand Split" aria-haspopup="true" aria-expanded="false">
+              ⚙ Tools ▾
             </button>
-            <button id="editorLegatoBtn" type="button" class="ui-btn" title="Extend short chords and notes to sustain until the next chord change">
-              ━ Legato
-            </button>
-            <select id="editorSplitHandSelect" class="ui-select" title="Choose Left/Right Hand Split Mode">
-              <option value="auto" selected>L/R: Auto Smart</option>
-              <option value="53">L/R Split: F3</option>
-              <option value="55">L/R Split: G3</option>
-              <option value="57">L/R Split: A3</option>
-              <option value="60">L/R Split: C4</option>
-              <option value="62">L/R Split: D4</option>
-            </select>
-            <button id="editorResplitHandsBtn" type="button" class="ui-btn" title="Re-assign Left and Right hands for the song (or selected notes)">
-              ⇄ Split L/R
-            </button>
+            <div id="editorToolsPopover" class="editor-tools-popover" role="menu">
+              <div class="editor-tools-section">
+                <span class="editor-tools-heading">Tempo &amp; Bar Alignment</span>
+                <div class="editor-tools-row">
+                  <span class="editor-mini-label">BPM</span>
+                  <input id="editorBpmInput" type="number" min="40" max="240" step="1" value="120" class="editor-num-input" title="Song Tempo (BPM)" />
+                  <button id="editorGridLeftBtn" type="button" class="ui-btn" title="Shift Bar 1 Grid Earlier (-0.05s)">Bar ◀</button>
+                  <button id="editorGridRightBtn" type="button" class="ui-btn" title="Shift Bar 1 Grid Later (+0.05s)">Bar ▶</button>
+                </div>
+              </div>
+
+              <div class="hud-divider"></div>
+
+              <div class="editor-tools-section">
+                <span class="editor-tools-heading">Quick Cleanup</span>
+                <div class="editor-tools-row">
+                  <button id="editorSnapAllBtn" type="button" class="ui-btn" title="Gently snap nearby note starts onto the active beat grid">⌗ Snap Grid</button>
+                  <button id="editorLegatoBtn" type="button" class="ui-btn" title="Extend short chords and notes to sustain until the next chord change">━ Legato</button>
+                </div>
+              </div>
+
+              <div class="hud-divider"></div>
+
+              <div class="editor-tools-section">
+                <span class="editor-tools-heading">Left / Right Hand Split</span>
+                <div class="editor-tools-row">
+                  <select id="editorSplitHandSelect" class="ui-select" title="Choose Left/Right Hand Split Mode">
+                    <option value="auto" selected>L/R: Auto Smart</option>
+                    <option value="53">L/R Split: F3</option>
+                    <option value="55">L/R Split: G3</option>
+                    <option value="57">L/R Split: A3</option>
+                    <option value="60">L/R Split: C4</option>
+                    <option value="62">L/R Split: D4</option>
+                  </select>
+                  <button id="editorResplitHandsBtn" type="button" class="ui-btn" title="Re-assign Left and Right hands for the song (or selected notes)">⇄ Split L/R</button>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
 
-        <!-- Selected Note Inspector Bar -->
+        <!-- Selected Note Inspector Bar (Revealed only when a note is selected) -->
         <div id="noteInspectorBar" class="note-inspector-bar">
           <span id="inspectorNoteLabel" class="inspector-note-label">Tap a note to inspect/edit • Drag empty runway to scroll time</span>
           <div class="inspector-actions">
@@ -452,17 +472,25 @@
       <div class="modal-card add-song-modal-card">
         <div class="modal-header">
           <div class="modal-title-group">
-            <h2 id="addSongModalTitle" class="modal-title">Add Song</h2>
+            <h2 id="addSongModalTitle" class="modal-title">Add a Song</h2>
           </div>
           <button id="closeAddSongModalBtn" type="button" class="ui-btn icon-btn" title="Close" aria-label="Close Modal" onclick="var m=document.getElementById('addSongModal');if(m){m.classList.remove('open');m.setAttribute('aria-hidden','true');}">&times;</button>
         </div>
 
         <div class="modal-body add-song-choice-list">
-          <label for="midiInput" id="homeOpenMidiBtn" class="ui-btn ui-btn-accent add-song-choice-btn" title="Upload a Standard .MID or .MIDI file" onclick="var m=document.getElementById('addSongModal');if(m){m.classList.remove('open');m.setAttribute('aria-hidden','true');}">
-            <span>Add .MID File</span>
+          <label for="midiInput" id="homeOpenMidiBtn" class="add-song-card-btn card-midi" title="Upload a Standard .MID or .MIDI file" onclick="var m=document.getElementById('addSongModal');if(m){m.classList.remove('open');m.setAttribute('aria-hidden','true');}">
+            <span class="add-song-card-icon">🎹</span>
+            <span class="add-song-card-text">
+              <strong>MIDI File (.mid, .midi)</strong>
+              <span>Instant import with automatic left &amp; right hand splitting</span>
+            </span>
           </label>
-          <button id="homeOpenAiModalBtn" type="button" class="ui-btn ui-btn-emerald add-song-choice-btn" title="Convert an MP3, WAV, M4A, or OGG song into piano notes" onclick="var m=document.getElementById('addSongModal');if(m){m.classList.remove('open');m.setAttribute('aria-hidden','true');}">
-            <span>Add MP3 File</span>
+          <button id="homeOpenAiModalBtn" type="button" class="add-song-card-btn card-audio" title="Convert an MP3, WAV, M4A, or OGG song into piano notes" onclick="var m=document.getElementById('addSongModal');if(m){m.classList.remove('open');m.setAttribute('aria-hidden','true');}">
+            <span class="add-song-card-icon">🎵</span>
+            <span class="add-song-card-text">
+              <strong>Audio Recording (.mp3, .wav, .m4a)</strong>
+              <span>Turn any song recording into playable falling piano notes</span>
+            </span>
           </button>
         </div>
       </div>
@@ -511,22 +539,29 @@
             </div>
           </div>
 
-          <!-- Python AI Backend Config Box -->
-          <div id="serverConfigBox" class="server-config-box">
-            <div class="server-config-row">
-              <div style="display:flex; align-items:center; gap:8px; flex:1;">
-                <span class="modal-label" style="white-space:nowrap;">AI Server URL:</span>
-                <input id="aiServerUrlInput" type="text" class="modal-text-input" value="http://localhost:8000" placeholder="http://192.168.1.x:8000" />
-                <button id="testAiServerBtn" type="button" class="ui-btn" style="padding:4px 9px; font-size:11.5px;">Check</button>
-              </div>
-              <span id="aiServerStatusPill" class="server-status-pill">Offline</span>
-            </div>
+          <!-- Collapsible Advanced AI Server Config -->
+          <div id="advancedServerWrap" class="advanced-server-wrap">
+            <button id="advancedServerToggleBtn" type="button" class="advanced-server-toggle" aria-expanded="false">
+              <span><span class="adv-chevron">▸</span> Advanced: Local AI Server</span>
+              <span class="adv-hint">Optional</span>
+            </button>
 
-            <div class="hud-row" style="font-size:12px;">
-              <span>Isolate Piano Stem from Full Mix</span>
-              <button id="isolatePianoSwitch" type="button" class="switch-btn active-green" aria-label="Toggle Piano Stem Isolation">
-                <span class="switch-thumb"></span>
-              </button>
+            <div id="serverConfigBox" class="server-config-box" style="display:none;">
+              <div class="server-config-row">
+                <div style="display:flex; align-items:center; gap:8px; flex:1;">
+                  <span class="modal-label" style="white-space:nowrap;">AI Server URL:</span>
+                  <input id="aiServerUrlInput" type="text" class="modal-text-input" value="http://localhost:8000" placeholder="http://192.168.1.x:8000" />
+                  <button id="testAiServerBtn" type="button" class="ui-btn" style="padding:4px 9px; font-size:11.5px;">Check</button>
+                </div>
+                <span id="aiServerStatusPill" class="server-status-pill">Offline</span>
+              </div>
+
+              <div class="hud-row" style="font-size:12px;">
+                <span>Isolate Piano Stem from Full Mix</span>
+                <button id="isolatePianoSwitch" type="button" class="switch-btn active-green" aria-label="Toggle Piano Stem Isolation">
+                  <span class="switch-thumb"></span>
+                </button>
+              </div>
             </div>
           </div>
 
@@ -555,10 +590,10 @@
   </div>
 
   <!-- Modular Application Scripts (Zero Build Step Required) -->
-  <script src="js/songs.js?v=4.8"></script>
-  <script src="js/midi-parser.js?v=4.8"></script>
-  <script src="js/audio-transcriber.js?v=4.8"></script>
-  <script src="js/audio.js?v=4.8"></script>
-  <script src="js/app.js?v=4.8"></script>
+  <script src="js/songs.js?v=4.9"></script>
+  <script src="js/midi-parser.js?v=4.9"></script>
+  <script src="js/audio-transcriber.js?v=4.9"></script>
+  <script src="js/audio.js?v=4.9"></script>
+  <script src="js/app.js?v=4.9"></script>
 </body>
 </html>
