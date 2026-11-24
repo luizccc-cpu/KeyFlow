@@ -3014,7 +3014,7 @@
         srcBadge.textContent = 'Chord Sheet';
       } else if (cat === 'ai') {
         srcBadge.className = 'song-badge ai';
-        srcBadge.textContent = 'AI Audio';
+        srcBadge.textContent = 'MP3 Audio';
       } else if (cat === 'midi') {
         srcBadge.className = 'song-badge midi';
         srcBadge.textContent = 'MIDI Upload';

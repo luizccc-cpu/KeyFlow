@@ -1,4 +1,4 @@
-const CACHE_NAME = 'keyflow-shell-v4.12';
+const CACHE_NAME = 'keyflow-shell-v4.13';
 
 const PRECACHE_URLS = [
   './',
@@ -6,13 +6,13 @@ const PRECACHE_URLS = [
   './manifest.json',
   './assets/icon-180.png',
   './assets/icon-512.png',
-  './css/styles.css?v=4.12',
-  './js/songs.js?v=4.12',
-  './js/midi-parser.js?v=4.12',
-  './js/audio-transcriber.js?v=4.12',
-  './js/chord-importer.js?v=4.12',
-  './js/audio.js?v=4.12',
-  './js/app.js?v=4.12'
+  './css/styles.css?v=4.13',
+  './js/songs.js?v=4.13',
+  './js/midi-parser.js?v=4.13',
+  './js/audio-transcriber.js?v=4.13',
+  './js/chord-importer.js?v=4.13',
+  './js/audio.js?v=4.13',
+  './js/app.js?v=4.13'
 ];
 
 self.addEventListener('install', (event) => {

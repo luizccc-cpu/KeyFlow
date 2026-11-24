@@ -942,7 +942,7 @@
     }
 
     return {
-      title: cleanTitle + ' (AI Audio)',
+      title: cleanTitle + ' (MP3 Audio)',
       notes: extractedNotes,
       duration: duration,
       beats: global.generateBeatGrid(duration, 60 / estimatedBpm, 4, 0.8),
