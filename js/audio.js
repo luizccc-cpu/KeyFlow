@@ -17,6 +17,7 @@
       this.warmth = 24; // 0..100
       this.sustainPedal = false;
       this.sustainedVoices = [];
+      this.activeVoices = [];
 
       this.masterGain = null;
       this.feltFilter = null;
@@ -56,7 +57,7 @@
         comp.release.value = 0.22;
 
         this.masterGain = this.ctx.createGain();
-        this.masterGain.gain.value = 0.85;
+        this.masterGain.gain.value = this.muted ? 0.0 : 0.85;
 
         // Real-time Felt Softness Low-pass Filter
         this.feltFilter = this.ctx.createBiquadFilter();
@@ -129,10 +130,84 @@
       if (!this.sustainPedal || !this.ctx) return;
       const now = this.ctx.currentTime;
       this.sustainedVoices = this.sustainedVoices.filter(v => v.endTime > now);
-      if (this.sustainedVoices.length > 48) {
-        this.sustainedVoices.shift();
+      if (this.sustainedVoices.length >= 48) {
+        const evicted = this.sustainedVoices.shift();
+        if (evicted && evicted.gainNode) {
+          try {
+            evicted.gainNode.gain.cancelScheduledValues(now);
+            evicted.gainNode.gain.setValueAtTime(Math.max(0.0002, evicted.gainNode.gain.value || 0.05), now);
+            evicted.gainNode.gain.setTargetAtTime(0.0001, now, 0.08);
+          } catch (e) {}
+        }
       }
       this.sustainedVoices.push({ gainNode, endTime });
+    }
+
+    registerActiveVoice(gainNode, sources, endTime) {
+      if (!this.ctx) return;
+      const now = this.ctx.currentTime;
+      this.activeVoices = this.activeVoices.filter(v => v.endTime > now);
+      while (this.activeVoices.length >= 64) {
+        const evicted = this.activeVoices.shift();
+        if (evicted && evicted.gainNode) {
+          try {
+            evicted.gainNode.gain.cancelScheduledValues(now);
+            evicted.gainNode.gain.setValueAtTime(Math.max(0.0002, evicted.gainNode.gain.value || 0.05), now);
+            evicted.gainNode.gain.setTargetAtTime(0.0001, now, 0.035);
+          } catch (e) {}
+        }
+        if (evicted && Array.isArray(evicted.sources)) {
+          for (let i = 0; i < evicted.sources.length; i++) {
+            try { evicted.sources[i].stop(now + 0.14); } catch (e) {}
+          }
+        }
+      }
+      this.activeVoices.push({
+        gainNode,
+        sources: Array.isArray(sources) ? sources : [],
+        endTime
+      });
+    }
+
+    stopAll() {
+      if (!this.ctx) {
+        this.activeVoices = [];
+        this.sustainedVoices = [];
+        return;
+      }
+      const now = this.ctx.currentTime;
+      const dampVoice = (v) => {
+        if (v && v.gainNode) {
+          try {
+            v.gainNode.gain.cancelScheduledValues(now);
+            v.gainNode.gain.setValueAtTime(Math.max(0.0002, v.gainNode.gain.value || 0.05), now);
+            v.gainNode.gain.setTargetAtTime(0.0001, now, 0.025);
+          } catch (e) {}
+        }
+        if (v && Array.isArray(v.sources)) {
+          for (let i = 0; i < v.sources.length; i++) {
+            try { v.sources[i].stop(now + 0.12); } catch (e) {}
+          }
+        }
+      };
+      for (let i = 0; i < this.activeVoices.length; i++) dampVoice(this.activeVoices[i]);
+      for (let i = 0; i < this.sustainedVoices.length; i++) dampVoice(this.sustainedVoices[i]);
+      this.activeVoices = [];
+      this.sustainedVoices = [];
+    }
+
+    setMuted(muted) {
+      this.muted = !!muted;
+      if (this.ctx && this.masterGain) {
+        const now = this.ctx.currentTime;
+        try {
+          this.masterGain.gain.cancelScheduledValues(now);
+          this.masterGain.gain.setTargetAtTime(this.muted ? 0.0 : 0.85, now, 0.015);
+        } catch (e) {}
+      }
+      if (this.muted) {
+        this.stopAll();
+      }
     }
 
     createHallImpulseBuffer(durationSec, decayRate) {
@@ -310,6 +385,7 @@
         const stopTime = now + dur + (this.sustainPedal ? 2.4 : 1.5);
         src.start(now);
         src.stop(stopTime);
+        this.registerActiveVoice(env, [src], stopTime);
         this.registerSustainedVoice(env, stopTime);
       } catch (e) {}
     }
@@ -318,6 +394,7 @@
       try {
         const normW = this.warmth / 100;
         const voiceGain = ctx.createGain();
+        const voiceSources = [];
 
         // Higher notes decay naturally faster on a real acoustic piano
         const pitchFactor = Math.max(0.3, Math.min(1.6, Math.pow(60 / Math.max(24, midi), 1.3)));
@@ -334,9 +411,10 @@
         // Per-note velocity-controlled lowpass filter
         const noteLP = ctx.createBiquadFilter();
         noteLP.type = 'lowpass';
-        const startCutoff = freq * (this.preset === 'mellow_felt' ? 4.2 : 7.5) * (0.65 + vel * 0.55) * (1.15 - normW * 0.55);
+        const rawStartCutoff = freq * (this.preset === 'mellow_felt' ? 4.2 : 7.5) * (0.65 + vel * 0.55) * (1.15 - normW * 0.55);
         const endCutoff = Math.max(freq * 1.3, 320);
-        noteLP.frequency.setValueAtTime(Math.min(12000, startCutoff), now);
+        const startCutoff = Math.min(12000, Math.max(endCutoff * 1.15, rawStartCutoff));
+        noteLP.frequency.setValueAtTime(startCutoff, now);
         noteLP.frequency.exponentialRampToValueAtTime(endCutoff, now + dur + 0.5);
 
         noteLP.connect(voiceGain);
@@ -368,6 +446,7 @@
           osc2.start(now);
           osc1.stop(stopTime);
           osc2.stop(stopTime);
+          this.registerActiveVoice(voiceGain, [osc1, osc2], stopTime);
           return;
         }
 
@@ -403,6 +482,7 @@
           pGain.connect(noteLP);
           osc.start(now);
           osc.stop(stopTime);
+          voiceSources.push(osc);
         }
 
         // Soft Felt Hammer Thump Transient (adds authentic physical key-strike warmth)
@@ -422,11 +502,14 @@
           hammerBP.connect(hammerGain);
           hammerGain.connect(noteLP);
           noiseSrc.start(now);
+          voiceSources.push(noiseSrc);
         }
+        this.registerActiveVoice(voiceGain, voiceSources, stopTime);
       } catch (e) {}
     }
 
     playMetronomeClick(isDownbeat) {
+      if (this.muted) return;
       const ctx = this.ensureContext();
       if (!ctx) return;
       try {

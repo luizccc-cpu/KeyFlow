@@ -80,10 +80,12 @@
     horizonSec: 5.0, // Strict 5-second lookahead
     waitMode: false,
     waitingMidis: new Set(),
-    clearedWaitBuckets: new Set(),
-    currentWaitBucket: null,
+    waitingNoteIndices: new Set(),
+    clearedWaitNoteIndices: new Set(),
     waitStartedAtMs: null,
     passHadLongWaitStall: false,
+    passWrongKeys: 0,
+    passMisses: 0,
 
     handIsoMaster: false,
     leftHandOn: false,
@@ -100,7 +102,7 @@
     loopB: 14.0,
     speedRamp: false,
     loopPassCount: 1,
-    targetRampSpeed: 1.25,
+    targetRampSpeed: 1.0,
 
     // Phase 4A: Interactive Visual Note Editor State
     editorTool: 'select', // 'select' | 'group' | 'add' | 'delete'
@@ -118,10 +120,12 @@
     metronomeOn: false,
     countInOn: false,
     isCountingIn: false,
+    songFinished: false,
 
     stats: { hits: 0, misses: 0, wrongKeys: 0, streak: 0, bestStreak: 0 },
     wrongKeyFlashes: {},
     hitScoredNoteIndices: new Set(),
+    missedNoteIndices: new Set(),
 
     minMidi: 48,
     maxMidi: 84,
@@ -310,6 +314,18 @@
     }
   }
 
+  let editDrag = null;
+  let lastEmptyRunwayTap = { timeMs: 0, x: 0, y: 0 };
+
+  function getRunwayTiming() {
+    const horizonReal = state.horizonSec;
+    const speedFactor = (state.viewMode === 'edit') ? 1.0 : Math.max(0.25, state.speed || 1.0);
+    const songHorizon = horizonReal * speedFactor;
+    const pxPerSongSec = strikeY / songHorizon;
+    const pxPerRealSec = strikeY / horizonReal;
+    return { horizonReal, speedFactor, songHorizon, pxPerSongSec, pxPerRealSec };
+  }
+
   function renderFrame(dt) {
     ctx.clearRect(0, 0, width, height);
 
@@ -333,8 +349,7 @@
       ctx.stroke();
     }
 
-    const horizon = state.horizonSec;
-    const pxPerSec = strikeY / horizon;
+    const { horizonReal, songHorizon, pxPerSongSec, pxPerRealSec } = getRunwayTiming();
     const curT = state.currentTime;
 
     // 3A. Scrolling Musical Measure & Beat Gridlines
@@ -344,9 +359,9 @@
       for (let i = 0; i < beats.length; i++) {
         const b = beats[i];
         if (b.time < curT) continue;
-        if (b.time > curT + horizon + 0.05) break;
+        if (b.time > curT + songHorizon + 0.05) break;
 
-        const y = strikeY - (b.time - curT) * pxPerSec;
+        const y = strikeY - (b.time - curT) * pxPerSongSec;
         if (y < 8 || y > strikeY - 2) continue;
 
         if (b.isMeasure) {
@@ -400,7 +415,7 @@
       const gridOff = typeof state.song.gridOffset === 'number' ? state.song.gridOffset : 0.8;
       if (stepSec >= 0.04) {
         const firstIdx = Math.ceil((curT - gridOff) / stepSec);
-        const endT = curT + horizon + 0.05;
+        const endT = curT + songHorizon + 0.05;
         ctx.save();
         ctx.beginPath();
         ctx.setLineDash([2, 6]);
@@ -408,7 +423,7 @@
           const tSnap = gridOff + k * stepSec;
           if (tSnap > endT) break;
           if (tSnap < curT) continue;
-          const ySnap = strikeY - (tSnap - curT) * pxPerSec;
+          const ySnap = strikeY - (tSnap - curT) * pxPerSongSec;
           if (ySnap < 8 || ySnap > strikeY - 2) continue;
           ctx.moveTo(0, ySnap);
           ctx.lineTo(width - 44, ySnap);
@@ -427,8 +442,8 @@
     ctx.textAlign = 'right';
     ctx.textBaseline = 'middle';
 
-    for (let s = 1; s <= Math.floor(horizon); s++) {
-      const y = strikeY - s * pxPerSec;
+    for (let s = 1; s <= Math.floor(horizonReal); s++) {
+      const y = strikeY - s * pxPerRealSec;
       if (y < 14) continue;
       ctx.beginPath();
       ctx.moveTo(state.showMeasureGrid ? (width - 52) : 0, y);
@@ -457,7 +472,10 @@
       const nEnd = n.time + n.duration;
 
       if (nEnd < curT - 0.04) continue;
-      if (nStart > curT + horizon + 0.1) break;
+      if (nStart > curT + songHorizon + 0.1) {
+        if (state.viewMode === 'edit' && editDrag && editDrag.noteRef) continue;
+        break;
+      }
 
       const kGeom = state.keyMap[n.midi];
       if (!kGeom) continue;
@@ -466,8 +484,8 @@
         (n.hand === 'L' && state.leftHandOn) ||
         (n.hand === 'R' && state.rightHandOn);
 
-      const rawBotY = strikeY - (nStart - curT) * pxPerSec;
-      const rawTopY = strikeY - (nEnd - curT) * pxPerSec;
+      const rawBotY = strikeY - (nStart - curT) * pxPerSongSec;
+      const rawTopY = strikeY - (nEnd - curT) * pxPerSongSec;
 
       const botY = Math.min(strikeY, rawBotY);
       const topY = Math.max(-16, rawTopY);
@@ -475,7 +493,7 @@
       if (barH <= 2) continue;
 
       const hittingNow = (nStart <= curT + 0.025 && nEnd >= curT);
-      const isWaiting = state.waitingMidis.has(n.midi) && Math.abs(nStart - curT) < 0.08;
+      const isWaiting = state.waitingNoteIndices.has(i);
 
       if (hittingNow && handActive) {
         activeKeys[n.midi] = { hand: n.hand };
@@ -486,7 +504,7 @@
 
       // Subtle vertical lane highlight under approaching notes
       if (handActive && rawBotY > strikeY * 0.25) {
-        const alpha = Math.min(0.11, Math.max(0, 1 - (nStart - curT) / horizon) * 0.11);
+        const alpha = Math.min(0.11, Math.max(0, 1 - (nStart - curT) / songHorizon) * 0.11);
         ctx.fillStyle = (n.hand === 'L')
           ? 'rgba(41, 151, 255, ' + alpha + ')'
           : 'rgba(52, 211, 153, ' + alpha + ')';
@@ -869,8 +887,10 @@
 
   function resetNoteTriggersBefore(sec) {
     state.playedIndices.clear();
-    state.clearedWaitBuckets.clear();
+    state.clearedWaitNoteIndices.clear();
+    state.waitingNoteIndices.clear();
     state.waitingMidis.clear();
+    state.missedNoteIndices.clear();
     state.waitStartedAtMs = null;
     updateWaitBanner();
 
@@ -878,7 +898,8 @@
     for (let i = 0; i < notes.length; i++) {
       if (notes[i].time < sec - 0.02) {
         state.playedIndices.add(i);
-        state.clearedWaitBuckets.add(Math.round(notes[i].time * 50));
+        state.clearedWaitNoteIndices.add(i);
+        state.missedNoteIndices.add(i);
       }
     }
   }
@@ -899,26 +920,26 @@
     if (state.waitMode) {
       for (let i = 0; i < notes.length; i++) {
         const n = notes[i];
+        if (n.time > nextT) break;
         const handActive = !state.handIsoMaster ||
           (n.hand === 'L' && state.leftHandOn) ||
           (n.hand === 'R' && state.rightHandOn);
         if (!handActive) continue;
 
-        const bucket = Math.round(n.time * 50);
-        if (n.time >= prevT - 0.02 && n.time <= nextT && !state.clearedWaitBuckets.has(bucket)) {
-          nextT = n.time;
+        if (!state.clearedWaitNoteIndices.has(i) && n.time >= prevT - 0.02 && n.time <= nextT) {
+          nextT = Math.max(prevT, n.time);
           for (let j = i; j < notes.length; j++) {
             const nj = notes[j];
-            if (Math.round(nj.time * 50) === bucket) {
-              const hAct = !state.handIsoMaster ||
-                (nj.hand === 'L' && state.leftHandOn) ||
-                (nj.hand === 'R' && state.rightHandOn);
-              if (hAct) state.waitingMidis.add(nj.midi);
-            } else if (nj.time > n.time + 0.05) {
-              break;
+            if (nj.time - n.time > 0.035) break;
+            if (state.clearedWaitNoteIndices.has(j)) continue;
+            const hAct = !state.handIsoMaster ||
+              (nj.hand === 'L' && state.leftHandOn) ||
+              (nj.hand === 'R' && state.rightHandOn);
+            if (hAct) {
+              state.waitingNoteIndices.add(j);
+              state.waitingMidis.add(nj.midi);
             }
           }
-          state.currentWaitBucket = bucket;
           state.waitStartedAtMs = performance.now();
           updateWaitBanner();
           break;
@@ -957,7 +978,7 @@
       if (state.playedIndices.has(i)) continue;
       const n = notes[i];
       if (n.time <= state.currentTime) {
-        if (state.waitMode && state.waitingMidis.has(n.midi)) continue;
+        if (state.waitMode && state.waitingNoteIndices.has(i)) continue;
         state.playedIndices.add(i);
         const handActive = !state.handIsoMaster ||
           (n.hand === 'L' && state.leftHandOn) ||
@@ -970,16 +991,37 @@
       }
     }
 
+    // Count missed notes once they pass the 300ms late-hit tolerance window (if user is actively playing)
+    if (state.viewMode === 'play' && (state.stats.hits + state.stats.wrongKeys) > 0) {
+      const missCutoff = state.currentTime - 0.30;
+      let missedAny = false;
+      for (let i = 0; i < notes.length; i++) {
+        const n = notes[i];
+        if (n.time >= missCutoff) break;
+        if (state.hitScoredNoteIndices.has(i) || state.missedNoteIndices.has(i)) continue;
+        const handActive = !state.handIsoMaster ||
+          (n.hand === 'L' && state.leftHandOn) ||
+          (n.hand === 'R' && state.rightHandOn);
+        state.missedNoteIndices.add(i);
+        if (handActive) {
+          state.stats.misses++;
+          state.passMisses++;
+          state.stats.streak = 0;
+          missedAny = true;
+        }
+      }
+      if (missedAny) updateAccuracyUI();
+    }
+
     if (state.loopEnabled && state.currentTime >= state.loopB) {
       state.loopPassCount++;
-      if (state.speedRamp && !state.passHadLongWaitStall && state.speed < state.targetRampSpeed) {
-        state.speed = Math.min(state.targetRampSpeed, Math.round((state.speed + 0.05) * 100) / 100);
-        const speedStr = formatSpeedBadge(state.speed);
-        document.getElementById('speedBtn').textContent = speedStr;
-        const miniSum = document.getElementById('hudMiniSummary');
-        if (miniSum) miniSum.textContent = speedStr;
+      const isCleanPass = !state.passHadLongWaitStall && state.passWrongKeys === 0 && state.passMisses === 0;
+      if (state.speedRamp && isCleanPass && state.speed < state.targetRampSpeed) {
+        applyPlaybackSpeed(Math.min(state.targetRampSpeed, Math.round((state.speed + 0.05) * 100) / 100));
       }
       state.passHadLongWaitStall = false;
+      state.passWrongKeys = 0;
+      state.passMisses = 0;
       state.waitStartedAtMs = null;
       syncLoopUI();
       seekTo(state.loopA);
@@ -993,19 +1035,29 @@
     }
 
     if (state.currentTime >= state.song.duration) {
+      const totalFinal = state.stats.hits + state.stats.misses + state.stats.wrongKeys;
+      if (totalFinal >= 8 && state.stats.hits >= 4 && state.song && state.song.id) {
+        recordSongBestAccuracy(state.song.id, Math.round((state.stats.hits / totalFinal) * 100));
+      }
       state.currentTime = 0;
       resetNoteTriggersBefore(0);
       setPlaying(false);
-      resetAccuracyStats();
+      state.songFinished = true;
     }
 
     syncTimelineUI();
   }
 
   function seekTo(sec) {
+    if (audioEngine && typeof audioEngine.stopAll === 'function') {
+      audioEngine.stopAll();
+    }
     state.currentTime = Math.max(0, Math.min(state.song.duration, sec));
     resetNoteTriggersBefore(state.currentTime);
     resetAccuracyStats();
+    state.passWrongKeys = 0;
+    state.passMisses = 0;
+    state.passHadLongWaitStall = false;
     cancelCountIn();
     syncTimelineUI();
   }
@@ -1055,8 +1107,16 @@
   }
 
   function setPlaying(play) {
+    if (play && state.isCountingIn) {
+      cancelCountIn();
+      doSetPlaying(false);
+      return;
+    }
     if (play && !state.hudMinimized && typeof setHudMinimized === 'function') {
       setHudMinimized(true);
+    }
+    if (play && state.songFinished) {
+      resetAccuracyStats();
     }
     if (play && state.countInOn && !state.isCountingIn) {
       runCountIn(function () {
@@ -1069,8 +1129,13 @@
   }
 
   function doSetPlaying(play) {
+    const wasPlaying = state.isPlaying;
     state.isPlaying = play;
-    if (play) audioEngine.ensureContext();
+    if (play) {
+      audioEngine.ensureContext();
+    } else if (wasPlaying && audioEngine && typeof audioEngine.stopAll === 'function') {
+      audioEngine.stopAll();
+    }
     document.getElementById('playSvg').style.display = play ? 'none' : 'block';
     document.getElementById('pauseSvg').style.display = play ? 'block' : 'none';
   }
@@ -1155,7 +1220,7 @@
     const pctEl = document.getElementById('accuracyPctText');
     const streakEl = document.getElementById('streakCountText');
     if (!pill || !pctEl || !streakEl) return;
-    const total = state.stats.hits + state.stats.wrongKeys;
+    const total = state.stats.hits + state.stats.misses + state.stats.wrongKeys;
     if (total === 0) {
       pctEl.textContent = '100%';
       streakEl.textContent = '0 streak';
@@ -1166,18 +1231,17 @@
     const pct = Math.round((state.stats.hits / total) * 100);
     pctEl.textContent = pct + '%';
     streakEl.textContent = state.stats.streak + ' streak';
-    if (total >= 8 && state.song && state.song.id) {
-      recordSongBestAccuracy(state.song.id, pct);
-    }
   }
 
   function resetAccuracyStats() {
+    state.songFinished = false;
     state.stats.hits = 0;
     state.stats.wrongKeys = 0;
     state.stats.misses = 0;
     state.stats.streak = 0;
     state.stats.bestStreak = 0;
     state.hitScoredNoteIndices.clear();
+    state.missedNoteIndices.clear();
     updateAccuracyUI();
   }
 
@@ -1370,6 +1434,16 @@
         }
       }
 
+      if (isHit || !isAlreadyScoredChordNote) {
+        if (state.stats.hits + state.stats.wrongKeys === 0 && state.song && Array.isArray(state.song.notes)) {
+          const prePassCutoff = state.currentTime - 0.30;
+          for (let i = 0; i < state.song.notes.length; i++) {
+            if (state.song.notes[i].time >= prePassCutoff) break;
+            state.missedNoteIndices.add(i);
+          }
+        }
+      }
+
       if (isHit) {
         state.stats.hits++;
         state.stats.streak++;
@@ -1377,6 +1451,7 @@
         updateAccuracyUI();
       } else if (!isAlreadyScoredChordNote) {
         state.stats.wrongKeys++;
+        state.passWrongKeys++;
         state.stats.streak = 0;
         state.wrongKeyFlashes[midi] = performance.now();
         if (kGeom) spawnParticles(kGeom.laneX, kGeom.laneW, 'wrong');
@@ -1389,8 +1464,15 @@
         state.passHadLongWaitStall = true;
       }
       state.waitingMidis.delete(midi);
-      if (state.waitingMidis.size === 0 && state.currentWaitBucket !== null) {
-        state.clearedWaitBuckets.add(state.currentWaitBucket);
+      Array.from(state.waitingNoteIndices).forEach(function (idx) {
+        const wn = state.song && state.song.notes ? state.song.notes[idx] : null;
+        if (wn && wn.midi === midi) {
+          state.playedIndices.add(idx);
+          state.clearedWaitNoteIndices.add(idx);
+          state.waitingNoteIndices.delete(idx);
+        }
+      });
+      if (state.waitingMidis.size === 0) {
         state.waitStartedAtMs = null;
       }
       updateWaitBanner();
@@ -1455,8 +1537,7 @@
 
   function hitTestRunwayNote(x, y) {
     if (y >= strikeY || y < 0) return null;
-    const horizon = state.horizonSec;
-    const pxPerSec = strikeY / horizon;
+    const { songHorizon, pxPerSongSec } = getRunwayTiming();
     const curT = state.currentTime;
     const notes = state.song.notes;
 
@@ -1464,13 +1545,13 @@
       const n = notes[i];
       const nStart = n.time;
       const nEnd = n.time + n.duration;
-      if (nEnd < curT - 0.04 || nStart > curT + horizon + 0.1) continue;
+      if (nEnd < curT - 0.04 || nStart > curT + songHorizon + 0.1) continue;
 
       const kGeom = state.keyMap[n.midi];
       if (!kGeom) continue;
 
-      const rawBotY = strikeY - (nStart - curT) * pxPerSec;
-      const rawTopY = strikeY - (nEnd - curT) * pxPerSec;
+      const rawBotY = strikeY - (nStart - curT) * pxPerSongSec;
+      const rawTopY = strikeY - (nEnd - curT) * pxPerSongSec;
       const botY = Math.min(strikeY, rawBotY);
       const topY = Math.max(-16, rawTopY);
       if (botY - topY <= 2) continue;
@@ -1501,6 +1582,7 @@
       bpm: song.bpm || 120,
       gridOffset: typeof song.gridOffset === 'number' ? song.gridOffset : 0.8,
       beatsPerBar: song.beatsPerBar || 4,
+      beatType: song.beatType || 4,
       duration: song.duration || 15
     };
   }
@@ -1595,7 +1677,7 @@
       });
       const pitchName = firstNote ? (firstNote.name || midiToName(firstNote.midi)) : '';
       if (mergeBtn) {
-        mergeBtn.disabled = false;
+        mergeBtn.disabled = !allSamePitch;
         mergeBtn.textContent = '🔗 Merge Selected (' + groupCount + ')';
       }
       if (labelEl) {
@@ -1685,12 +1767,22 @@
   }
 
   let autoSaveFlashTimer = null;
-  function flashAutoSaveIndicator() {
+  function flashAutoSaveIndicator(saveSuccess) {
     const bannerEl = document.getElementById('editAutoSaveBanner');
     const dotEl = document.getElementById('editAutoSaveDot');
     const textEl = document.getElementById('editAutoSaveText');
     if (!bannerEl || !textEl) return;
-    if (dotEl) dotEl.className = 'autosave-dot';
+    if (saveSuccess === false) {
+      if (autoSaveFlashTimer) clearTimeout(autoSaveFlashTimer);
+      bannerEl.classList.remove('saving');
+      if (dotEl) dotEl.style.background = '#ef4444';
+      textEl.textContent = '⚠ Save failed (storage full)';
+      return;
+    }
+    if (dotEl) {
+      dotEl.className = 'autosave-dot';
+      dotEl.style.background = '';
+    }
     bannerEl.classList.add('saving');
     textEl.textContent = 'Saving changes...';
     if (autoSaveFlashTimer) clearTimeout(autoSaveFlashTimer);
@@ -1707,9 +1799,17 @@
       state.song.isModifiedBuiltin = true;
     }
     if (audioTranscriber && audioTranscriber.customSongStore) {
-      audioTranscriber.customSongStore.saveSong(state.song);
+      flashAutoSaveIndicator();
+      Promise.resolve(audioTranscriber.customSongStore.saveSong(state.song))
+        .then(function (ok) {
+          if (ok === false) flashAutoSaveIndicator(false);
+        })
+        .catch(function () {
+          flashAutoSaveIndicator(false);
+        });
+    } else {
+      flashAutoSaveIndicator(false);
     }
-    flashAutoSaveIndicator();
   }
 
   function analyzeSongConfidence(song) {
@@ -1835,16 +1935,20 @@
     return suspectCount;
   }
 
-  function commitSongEdit(keepNoteRef) {
+  function commitSongEdit(keepNoteRef, options) {
     if (!state.song || !Array.isArray(state.song.notes)) return;
 
     const keptGroupRefs = [];
-    if (!keepNoteRef && state.selectedNoteIndices && state.selectedNoteIndices.size > 0) {
-      state.selectedNoteIndices.forEach(function (i) {
-        if (i >= 0 && i < state.song.notes.length) {
-          keptGroupRefs.push(state.song.notes[i]);
-        }
-      });
+    if (!keepNoteRef) {
+      if (state.selectedNoteIndices && state.selectedNoteIndices.size > 0) {
+        state.selectedNoteIndices.forEach(function (i) {
+          if (i >= 0 && i < state.song.notes.length) {
+            keptGroupRefs.push(state.song.notes[i]);
+          }
+        });
+      } else if (state.selectedNoteIndex >= 0 && state.selectedNoteIndex < state.song.notes.length) {
+        keptGroupRefs.push(state.song.notes[state.selectedNoteIndex]);
+      }
     }
 
     state.song.notes.sort(function (a, b) {
@@ -1880,10 +1984,16 @@
       if (end > maxEnd) maxEnd = end;
     }
     state.song.duration = Math.max(10, Math.round((maxEnd + 2.0) * 100) / 100);
-    const bpmVal = Math.max(30, Math.min(260, state.song.bpm || 120));
-    const offsetVal = typeof state.song.gridOffset === 'number' ? state.song.gridOffset : 0.8;
-    const bpbVal = state.song.beatsPerBar || 4;
-    state.song.beats = generateBeatGrid(state.song.duration, 60 / bpmVal, bpbVal, offsetVal);
+    const shouldRebuildBeats = (options && options.rebuildBeats) ||
+      !Array.isArray(state.song.beats) ||
+      state.song.beats.length === 0;
+    if (shouldRebuildBeats) {
+      const bpmVal = Math.max(30, Math.min(260, state.song.bpm || 120));
+      const offsetVal = typeof state.song.gridOffset === 'number' ? state.song.gridOffset : 0.8;
+      const bpbVal = state.song.beatsPerBar || 4;
+      const beatTypeVal = state.song.beatType || 4;
+      state.song.beats = generateBeatGrid(state.song.duration, (60 / bpmVal) * (4 / beatTypeVal), bpbVal, offsetVal);
+    }
 
     persistActiveSong();
     resetNoteTriggersBefore(state.currentTime);
@@ -1912,11 +2022,12 @@
     state.song.bpm = snap.bpm || 120;
     state.song.gridOffset = typeof snap.gridOffset === 'number' ? snap.gridOffset : 0.8;
     state.song.beatsPerBar = snap.beatsPerBar || 4;
+    if (snap.beatType) state.song.beatType = snap.beatType;
     state.song.duration = snap.duration || 15;
     state.selectedNoteIndex = -1;
     state.selectedNoteIndices.clear();
     state.groupDragBox = null;
-    commitSongEdit(null);
+    commitSongEdit(null, { rebuildBeats: true });
   }
 
   function undoEdit() {
@@ -1933,9 +2044,6 @@
     applySongSnapshot(next);
   }
 
-  let editDrag = null;
-  let lastEmptyRunwayTap = { timeMs: 0, x: 0, y: 0 };
-
   function updateGroupDragSelection(box, baseIndices) {
     if (!box || !state.song || !Array.isArray(state.song.notes)) return;
     const minX = Math.min(box.x0, box.x1);
@@ -1943,8 +2051,7 @@
     const minY = Math.min(box.y0, box.y1);
     const maxY = Math.max(box.y0, box.y1);
 
-    const horizon = state.horizonSec;
-    const pxPerSec = strikeY / horizon;
+    const { songHorizon, pxPerSongSec } = getRunwayTiming();
     const curT = state.currentTime;
     const notes = state.song.notes;
 
@@ -1953,13 +2060,13 @@
       const n = notes[i];
       const nStart = n.time;
       const nEnd = n.time + n.duration;
-      if (nEnd < curT - 0.04 || nStart > curT + horizon + 0.1) continue;
+      if (nEnd < curT - 0.04 || nStart > curT + songHorizon + 0.1) continue;
 
       const kGeom = state.keyMap[n.midi];
       if (!kGeom) continue;
 
-      const rawBotY = strikeY - (nStart - curT) * pxPerSec;
-      const rawTopY = strikeY - (nEnd - curT) * pxPerSec;
+      const rawBotY = strikeY - (nStart - curT) * pxPerSongSec;
+      const rawTopY = strikeY - (nEnd - curT) * pxPerSongSec;
       const botY = Math.min(strikeY, rawBotY);
       const topY = Math.max(-16, rawTopY);
       if (botY - topY <= 2) continue;
@@ -2051,7 +2158,7 @@
 
     // Edit Mode Runway Interaction
     try { canvas.setPointerCapture(e.pointerId); } catch (err) {}
-    const pxPerSec = strikeY / state.horizonSec;
+    const { pxPerSongSec: pxPerSec } = getRunwayTiming();
     const hitNote = hitTestRunwayNote(x, y);
 
     if (state.editorTool === 'delete') {
@@ -2197,16 +2304,16 @@
     if (pointerMidis[e.pointerId] !== undefined) {
       const hit = hitTestPiano(x, y);
       const prev = pointerMidis[e.pointerId];
-      if (hit !== null && hit !== prev) {
-        userNoteOff(prev);
+      if (hit !== prev) {
+        if (prev !== null) userNoteOff(prev);
         pointerMidis[e.pointerId] = hit;
-        userNoteOn(hit, 0.76);
+        if (hit !== null) userNoteOn(hit, 0.76);
       }
       return;
     }
 
     if (editDrag && editDrag.pointerId === e.pointerId) {
-      const pxPerSec = strikeY / state.horizonSec;
+      const { pxPerSongSec: pxPerSec } = getRunwayTiming();
 
       if (editDrag.mode === 'group-box') {
         state.groupDragBox = {
@@ -2272,7 +2379,9 @@
 
   function releasePointer(e) {
     if (pointerMidis[e.pointerId] !== undefined) {
-      userNoteOff(pointerMidis[e.pointerId]);
+      if (pointerMidis[e.pointerId] !== null) {
+        userNoteOff(pointerMidis[e.pointerId]);
+      }
       delete pointerMidis[e.pointerId];
     }
     if (editDrag && editDrag.pointerId === e.pointerId) {
@@ -2307,7 +2416,7 @@
   canvas.addEventListener('wheel', function (e) {
     if (state.viewMode === 'edit') {
       e.preventDefault();
-      const pxPerSec = Math.max(40, strikeY / state.horizonSec);
+      const pxPerSec = Math.max(40, getRunwayTiming().pxPerSongSec);
       seekTo(state.currentTime - (e.deltaY / pxPerSec));
     }
   }, { passive: false });
@@ -2372,7 +2481,7 @@
       setHudMinimized(!state.hudMinimized);
       return;
     }
-    if (KEY_OFFSETS[k] !== undefined && !heldKeys[k]) {
+    if (!e.ctrlKey && !e.metaKey && !e.altKey && KEY_OFFSETS[k] !== undefined && !heldKeys[k]) {
       heldKeys[k] = true;
       userNoteOn(60 + KEY_OFFSETS[k], 0.82);
     }
@@ -2511,6 +2620,9 @@
     const s = SONGS[id];
     if (!s) return;
     if (s.isCustom) {
+      if (!window.confirm('Delete "' + (s.title || 'this song') + '" from your library? This cannot be undone.')) {
+        return;
+      }
       if (audioTranscriber && audioTranscriber.customSongStore) {
         audioTranscriber.customSongStore.deleteSong(id);
       }
@@ -2520,6 +2632,9 @@
       }
       renderHomeSongGrid();
     } else if (FACTORY_BUILTIN_SONGS[id]) {
+      if (!window.confirm('Reset "' + (s.title || 'this song') + '" back to factory default? Your edits will be lost.')) {
+        return;
+      }
       SONGS[id] = JSON.parse(JSON.stringify(FACTORY_BUILTIN_SONGS[id]));
       if (audioTranscriber && audioTranscriber.customSongStore) {
         audioTranscriber.customSongStore.deleteSong(id);
@@ -2828,6 +2943,9 @@
     if (!s) return;
     setPlaying(false);
     cancelCountIn();
+    if (audioEngine && typeof audioEngine.stopAll === 'function') {
+      audioEngine.stopAll();
+    }
     resetAccuracyStats();
     state.activeSongId = id;
     state.song = s;
@@ -2840,6 +2958,8 @@
     state.loopB = Math.max(state.loopA + 2.0, Math.min(s.duration * 0.48, Math.max(state.loopA + 2.0, s.duration - 0.5)));
     state.loopPassCount = 1;
     state.passHadLongWaitStall = false;
+    state.passWrongKeys = 0;
+    state.passMisses = 0;
     state.waitStartedAtMs = null;
 
     state.selectedNoteIndex = -1;
@@ -2976,8 +3096,7 @@
       e.target.value = val;
       pushUndoSnapshot();
       state.song.bpm = val;
-      const keepRef = (state.selectedNoteIndex >= 0) ? state.song.notes[state.selectedNoteIndex] : null;
-      commitSongEdit(keepRef);
+      commitSongEdit(null, { rebuildBeats: true });
     });
   }
 
@@ -2986,8 +3105,7 @@
       pushUndoSnapshot();
       const curOff = typeof state.song.gridOffset === 'number' ? state.song.gridOffset : 0.8;
       state.song.gridOffset = Math.max(0, Math.round((curOff - 0.05) * 1000) / 1000);
-      const keepRef = (state.selectedNoteIndex >= 0) ? state.song.notes[state.selectedNoteIndex] : null;
-      commitSongEdit(keepRef);
+      commitSongEdit(null, { rebuildBeats: true });
     });
   }
 
@@ -2996,8 +3114,7 @@
       pushUndoSnapshot();
       const curOff = typeof state.song.gridOffset === 'number' ? state.song.gridOffset : 0.8;
       state.song.gridOffset = Math.round((curOff + 0.05) * 1000) / 1000;
-      const keepRef = (state.selectedNoteIndex >= 0) ? state.song.notes[state.selectedNoteIndex] : null;
-      commitSongEdit(keepRef);
+      commitSongEdit(null, { rebuildBeats: true });
     });
   }
 
@@ -3094,8 +3211,7 @@
       for (let i = 0; i < changes.length; i++) {
         changes[i].note.time = changes[i].nextTime;
       }
-      const keepRef = (state.selectedNoteIndex >= 0) ? state.song.notes[state.selectedNoteIndex] : null;
-      commitSongEdit(keepRef);
+      commitSongEdit(null);
       const labelEl = document.getElementById('inspectorNoteLabel');
       if (labelEl) {
         labelEl.classList.remove('suspect-active');
@@ -3201,7 +3317,7 @@
 
     if (lastAuditionNote) {
       audioEngine.playNote(lastAuditionNote.midi, 0.35, lastAuditionNote.velocity || 0.8);
-      commitSongEdit(lastAuditionNote);
+      commitSongEdit(null);
     }
   }
 
@@ -3245,7 +3361,7 @@
       const mergedDuration = Math.max(0.06, Math.round((endTime - startTime) * 1000) / 1000);
       const hand = selectedNotes[0].hand || (targetMidi < 60 ? 'L' : 'R');
 
-      let preservedFinger = 0;
+      let preservedFinger = undefined;
       for (let i = 0; i < selectedNotes.length; i++) {
         if (selectedNotes[i].finger >= 1 && selectedNotes[i].finger <= 5) {
           preservedFinger = selectedNotes[i].finger;
@@ -3298,18 +3414,16 @@
 
       pushUndoSnapshot();
       let targetHand = null;
-      let primaryNote = null;
       indices.forEach(function (idx) {
         if (idx >= 0 && idx < state.song.notes.length) {
           const note = state.song.notes[idx];
           if (targetHand === null) {
             targetHand = (note.hand === 'L') ? 'R' : 'L';
-            primaryNote = note;
           }
           note.hand = targetHand;
         }
       });
-      commitSongEdit(primaryNote);
+      commitSongEdit(null);
     });
   }
 
@@ -3378,6 +3492,7 @@
         setViewMode('play');
       } catch (err) {
         console.warn('MIDI parse error:', err);
+        alert('Could not load MIDI file: ' + (err && err.message ? err.message : 'Invalid or corrupted .mid file'));
       }
     };
     reader.readAsArrayBuffer(file);
@@ -3483,10 +3598,40 @@
     document.getElementById('waitOrb').classList.toggle('orb-dim', !state.waitMode);
     if (!state.waitMode) {
       state.waitingMidis.clear();
+      state.waitingNoteIndices.clear();
       state.waitStartedAtMs = null;
       updateWaitBanner();
     }
   });
+
+  function pruneWaitingNotesForActiveHands() {
+    if (!state.waitMode || state.waitingNoteIndices.size === 0 || !state.song || !Array.isArray(state.song.notes)) {
+      return;
+    }
+    const nextMidis = new Set();
+    Array.from(state.waitingNoteIndices).forEach(function (idx) {
+      const n = state.song.notes[idx];
+      if (!n) {
+        state.waitingNoteIndices.delete(idx);
+        return;
+      }
+      const handActive = !state.handIsoMaster ||
+        (n.hand === 'L' && state.leftHandOn) ||
+        (n.hand === 'R' && state.rightHandOn);
+      if (!handActive) {
+        state.waitingNoteIndices.delete(idx);
+        state.clearedWaitNoteIndices.add(idx);
+        state.playedIndices.add(idx);
+      } else {
+        nextMidis.add(n.midi);
+      }
+    });
+    state.waitingMidis = nextMidis;
+    if (state.waitingMidis.size === 0) {
+      state.waitStartedAtMs = null;
+    }
+    updateWaitBanner();
+  }
 
   // Hand Isolation Controls
   function syncHandIsolationUI() {
@@ -3508,6 +3653,7 @@
     if (rBtn) {
       rBtn.className = 'hand-pill hand-pill-r ' + (state.handIsoMaster && state.rightHandOn ? 'active' : 'inactive');
     }
+    pruneWaitingNotesForActiveHands();
   }
 
   document.getElementById('handIsoSwitch').addEventListener('click', function () {
@@ -3652,6 +3798,27 @@
 
   function setSpeedRamp(enabled) {
     state.speedRamp = !!enabled;
+    if (state.speedRamp) {
+      if (!state.loopEnabled) {
+        state.loopEnabled = true;
+        state.loopPassCount = 1;
+        state.passHadLongWaitStall = false;
+        state.passWrongKeys = 0;
+        state.passMisses = 0;
+        state.waitStartedAtMs = null;
+        const loopBtnEl = document.getElementById('abLoopBtn');
+        const loopBoxEl = document.getElementById('abLoopBox');
+        const hAEl = document.getElementById('loopHandleA');
+        const hBEl = document.getElementById('loopHandleB');
+        if (loopBtnEl) loopBtnEl.classList.add('active');
+        if (loopBoxEl) loopBoxEl.classList.add('visible');
+        if (hAEl) hAEl.classList.add('visible');
+        if (hBEl) hBEl.classList.add('visible');
+      }
+      if (state.speed > 0.5) {
+        applyPlaybackSpeed(0.5);
+      }
+    }
     if (speedRampSwitch) {
       speedRampSwitch.classList.toggle('active-green', state.speedRamp);
     }
@@ -3842,6 +4009,7 @@
         const result = await audioTranscriber.customSongStore.importLibraryJson(text);
         if (result && Array.isArray(result.songs)) {
           result.songs.forEach(function (s) {
+            if (!s || !s.id || s.id === '__proto__' || s.id === 'constructor' || s.id === 'prototype') return;
             SONGS[s.id] = s;
           });
         }
@@ -4164,7 +4332,11 @@
 
   // Audio Mute Button
   document.getElementById('muteBtn').addEventListener('click', function () {
-    audioEngine.muted = !audioEngine.muted;
+    if (typeof audioEngine.setMuted === 'function') {
+      audioEngine.setMuted(!audioEngine.muted);
+    } else {
+      audioEngine.muted = !audioEngine.muted;
+    }
     document.getElementById('volOnSvg').style.display = audioEngine.muted ? 'none' : 'block';
     document.getElementById('volOffSvg').style.display = audioEngine.muted ? 'block' : 'none';
   });
@@ -4180,6 +4352,8 @@
     state.loopEnabled = !state.loopEnabled;
     state.loopPassCount = 1;
     state.passHadLongWaitStall = false;
+    state.passWrongKeys = 0;
+    state.passMisses = 0;
     state.waitStartedAtMs = null;
     abLoopBtn.classList.toggle('active', state.loopEnabled);
     abLoopBox.classList.toggle('visible', state.loopEnabled);
@@ -4264,7 +4438,7 @@
     audioTranscriber.customSongStore.getAllSongs().then(function (savedList) {
       if (Array.isArray(savedList)) {
         savedList.forEach(function (item) {
-          if (item && item.id && Array.isArray(item.notes) && item.notes.length > 0) {
+          if (item && item.id && item.id !== '__proto__' && item.id !== 'constructor' && item.id !== 'prototype' && Array.isArray(item.notes) && item.notes.length > 0) {
             if (BUILTIN_IDS.indexOf(item.id) !== -1) {
               item.isCustom = false;
               item.isModifiedBuiltin = true;

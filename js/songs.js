@@ -15,11 +15,13 @@
   }
 
   function nameToMidi(name) {
-    const match = /^([A-G]#?)(-?\d+)$/i.exec(String(name).trim());
+    const match = /^([A-G])([#b]?)(-?\d+)$/i.exec(String(name).trim());
     if (!match) return 60;
-    const pc = NOTE_NAMES.indexOf(match[1].toUpperCase());
-    const oct = parseInt(match[2], 10);
-    return (oct + 1) * 12 + (pc >= 0 ? pc : 0);
+    const basePc = NOTE_NAMES.indexOf(match[1].toUpperCase());
+    if (basePc < 0) return 60;
+    const accidental = match[2] === '#' ? 1 : (match[2].toLowerCase() === 'b' ? -1 : 0);
+    const oct = parseInt(match[3], 10);
+    return Math.max(0, Math.min(127, (oct + 1) * 12 + basePc + accidental));
   }
 
   function isBlackMidi(midi) {
@@ -134,6 +136,7 @@
       title: 'Let It Be - The Beatles',
       notes,
       duration,
+      beatsPerBar: 4,
       beats: generateBeatGrid(duration, beat, 4, 0.8)
     };
   }
@@ -183,6 +186,7 @@
       title: 'Imagine - John Lennon',
       notes,
       duration,
+      beatsPerBar: 4,
       beats: generateBeatGrid(duration, beat, 4, 0.8)
     };
   }
@@ -227,6 +231,8 @@
       title: 'Clair de Lune - Debussy',
       notes,
       duration,
+      beatsPerBar: 9,
+      beatType: 8,
       beats: generateBeatGrid(duration, u, 9, 0.8)
     };
   }
@@ -252,7 +258,7 @@
       { n: 'F#5', b: 13, d: 1 }, { n: 'A5', b: 14, d: 1 }, { n: 'G5', b: 15, d: 1 },
       { n: 'F#5', b: 16, d: 1 }, { n: 'C#5', b: 17, d: 1 }, { n: 'B4', b: 18, d: 1 },
       { n: 'C#5', b: 19, d: 1 }, { n: 'D5', b: 20, d: 1 }, { n: 'A4', b: 21, d: 3 },
-      { n: 'F#4', b: 24, d: 5 }
+      { n: 'F#4', b: 24, d: 0.95 }
     ];
 
     for (let bar = 0; bar < 10; bar++) {
@@ -282,6 +288,7 @@
       title: 'Gymnopédie No. 1 - Satie',
       notes,
       duration,
+      beatsPerBar: 3,
       beats: generateBeatGrid(duration, beat, 3, 0.8)
     };
   }
@@ -356,6 +363,7 @@
       title: 'Pyramid Song - Radiohead',
       notes,
       duration,
+      beatsPerBar: 8,
       beats: generateBeatGrid(duration, beat, 8, 0.8)
     };
   }

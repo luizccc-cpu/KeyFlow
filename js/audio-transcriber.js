@@ -55,6 +55,7 @@
         bpm: songObj.bpm || 120,
         gridOffset: typeof songObj.gridOffset === 'number' ? songObj.gridOffset : 0.8,
         beatsPerBar: songObj.beatsPerBar || 4,
+        beatType: songObj.beatType || 4,
         isCustom: songObj.isCustom !== undefined ? !!songObj.isCustom : true,
         isModifiedBuiltin: !!songObj.isModifiedBuiltin,
         source: songObj.source || 'custom',
@@ -167,14 +168,18 @@
       for (let i = 0; i < rawSongs.length; i++) {
         const s = rawSongs[i];
         if (!s || !s.title || !Array.isArray(s.notes)) continue;
-        const rawId = String(s.id || ('imported_' + Date.now() + '_' + i)).replace(/[^a-zA-Z0-9_\-]/g, '_');
+        let rawId = String(s.id || ('imported_' + Date.now() + '_' + i)).replace(/[^a-zA-Z0-9_\-]/g, '_');
+        if (rawId === '__proto__' || rawId === 'constructor' || rawId === 'prototype') {
+          rawId = 'song_' + rawId;
+        }
         const safeBpm = Math.max(30, Math.min(260, Number(s.bpm) || 120));
         const safeBeatsPerBar = Math.max(1, Math.min(12, Number(s.beatsPerBar) || 4));
+        const safeBeatType = Math.max(1, Math.min(16, Number(s.beatType) || 4));
         const safeGridOffset = typeof s.gridOffset === 'number' ? s.gridOffset : 0.8;
         const songDur = Math.max(5, Number(s.duration) || 30);
         let beatsArr = Array.isArray(s.beats) ? s.beats : [];
         if (beatsArr.length === 0 && typeof global.generateBeatGrid === 'function') {
-          beatsArr = global.generateBeatGrid(songDur, 60 / safeBpm, safeBeatsPerBar, safeGridOffset);
+          beatsArr = global.generateBeatGrid(songDur, (60 / safeBpm) * (4 / safeBeatType), safeBeatsPerBar, safeGridOffset);
         }
 
         const validSong = {
@@ -197,6 +202,7 @@
           bpm: safeBpm,
           gridOffset: safeGridOffset,
           beatsPerBar: safeBeatsPerBar,
+          beatType: safeBeatType,
           isCustom: s.isCustom !== undefined ? !!s.isCustom : true,
           isModifiedBuiltin: !!s.isModifiedBuiltin,
           source: s.source || 'backup-restore',
@@ -263,6 +269,13 @@
   function exportSongToMidiUint8Array(song) {
     const bpm = Math.max(30, Math.min(260, Math.round((song && song.bpm) || 120)));
     const beatsPerBar = Math.max(1, Math.min(12, Math.round((song && song.beatsPerBar) || 4)));
+    const beatType = Math.max(1, Math.min(16, Math.round((song && song.beatType) || 4)));
+    let denPow = 2;
+    if (beatType === 1) denPow = 0;
+    else if (beatType === 2) denPow = 1;
+    else if (beatType === 8) denPow = 3;
+    else if (beatType === 16) denPow = 4;
+    else denPow = Math.max(0, Math.min(4, Math.round(Math.log2(beatType))));
     const usPerBeat = Math.round(60000000 / bpm);
     const ticksPerBeat = 480;
     const ticksPerSec = ticksPerBeat * (bpm / 60);
@@ -278,7 +291,7 @@
       {
         tick: 0,
         order: 1,
-        bytes: [0xff, 0x58, 0x04, beatsPerBar, 0x02, 0x18, 0x08]
+        bytes: [0xff, 0x58, 0x04, beatsPerBar, denPow, 0x18, 0x08]
       },
       {
         tick: 0,
@@ -475,7 +488,13 @@
     }
 
     global.assignHandsSmart(parsedSong.notes);
-    if (typeof global.extendChordLegato === 'function') {
+    const alreadyPostProcessedByBackend = !!(
+      payload &&
+      payload.midi_base64 &&
+      payload.transcriber_used &&
+      payload.transcriber_used !== 'librosa-cqt'
+    );
+    if (!alreadyPostProcessedByBackend && typeof global.extendChordLegato === 'function') {
       global.extendChordLegato(parsedSong.notes);
     }
     const maxEndAfterLegato = parsedSong.notes.reduce((m, n) => Math.max(m, n.time + n.duration), 0);
@@ -598,9 +617,10 @@
     const sr = audioBuffer.sampleRate;
     const numChannels = audioBuffer.numberOfChannels;
     const totalSamples = audioBuffer.length;
+    const maxFrameSize = Math.min(8192, Math.max(2048, Math.round(sr * 0.092)));
 
-    // Mix to mono (and optionally emphasize harmonic midband if isolatePiano is enabled)
-    const mono = new Float32Array(totalSamples);
+    // Mix to mono (zero-padded to at least maxFrameSize for short audio clips)
+    const mono = new Float32Array(Math.max(totalSamples, maxFrameSize));
     if (numChannels === 1) {
       mono.set(audioBuffer.getChannelData(0));
     } else {
@@ -629,7 +649,6 @@
     const freqs = new Float32Array(numBins);
     const windowLens = new Int32Array(numBins);
 
-    const maxFrameSize = Math.min(8192, Math.max(2048, Math.round(sr * 0.092)));
     const hopSamples = Math.max(256, Math.round(sr * 0.028)); // ~28ms hop
     const hopSec = hopSamples / sr;
 
@@ -694,8 +713,9 @@
         }
 
         // Harmonic Overtone Suppression: subtract 2nd (+12), 3rd (+19), 4th (+24), and 5th (+28) harmonics
+        const peakCopy = new Float32Array(cleaned);
         for (let b = 0; b < numBins; b++) {
-          const fund = cleaned[b];
+          const fund = peakCopy[b];
           if (fund <= 0.002) continue;
           if (b + 12 < numBins) cleaned[b + 12] = Math.max(0, cleaned[b + 12] - fund * 0.58);
           if (b + 19 < numBins) cleaned[b + 19] = Math.max(0, cleaned[b + 19] - fund * 0.36);

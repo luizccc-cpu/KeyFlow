@@ -393,6 +393,9 @@
    * - Uses assignHandsSmart for single-track or dominant-track MIDIs
    ********************************************************************/
   function parseStandardMidiFile(arrayBuffer, fileName) {
+    if (!arrayBuffer || arrayBuffer.byteLength < 14) {
+      throw new Error('Truncated or corrupted MIDI file');
+    }
     const view = new DataView(arrayBuffer);
     let pos = 0;
 
@@ -403,11 +406,25 @@
       }
       return s;
     }
-    function readU16() { const v = view.getUint16(pos, false); pos += 2; return v; }
-    function readU32() { const v = view.getUint32(pos, false); pos += 4; return v; }
-    function readVarLen() {
+    function readU8(limit = view.byteLength) {
+      if (pos >= limit) throw new Error('Truncated or corrupted MIDI file');
+      return view.getUint8(pos++);
+    }
+    function readU16(limit = view.byteLength) {
+      if (pos + 2 > limit) throw new Error('Truncated or corrupted MIDI file');
+      const v = view.getUint16(pos, false);
+      pos += 2;
+      return v;
+    }
+    function readU32(limit = view.byteLength) {
+      if (pos + 4 > limit) throw new Error('Truncated or corrupted MIDI file');
+      const v = view.getUint32(pos, false);
+      pos += 4;
+      return v;
+    }
+    function readVarLen(limit = view.byteLength) {
       let val = 0;
-      for (let i = 0; i < 4 && pos < view.byteLength; i++) {
+      for (let i = 0; i < 4 && pos < limit; i++) {
         const b = view.getUint8(pos++);
         val = (val << 7) | (b & 0x7f);
         if ((b & 0x80) === 0) break;
@@ -417,6 +434,9 @@
 
     if (readStr(4) !== 'MThd') throw new Error('Invalid MIDI header');
     const hdrLen = readU32();
+    if (hdrLen < 6 || 8 + hdrLen > view.byteLength) {
+      throw new Error('Truncated or corrupted MIDI file');
+    }
     const format = readU16();
     const numTracks = readU16();
     const division = readU16();
@@ -428,7 +448,7 @@
     const rawTracks = [];
     let maxSongTick = 0;
 
-    for (let t = 0; t < numTracks && pos < view.byteLength; t++) {
+    for (let t = 0; t < numTracks && pos + 8 <= view.byteLength; t++) {
       const chunkId = readStr(4);
       const chunkLen = readU32();
       const trackEnd = Math.min(view.byteLength, pos + chunkLen);
@@ -444,11 +464,12 @@
       const pedalEvents = [];
 
       while (pos < trackEnd) {
-        tick += readVarLen();
+        tick += readVarLen(trackEnd);
         if (pos >= trackEnd) break;
 
         let status = view.getUint8(pos);
         if (status < 0x80) {
+          if (!runningStatus) break;
           status = runningStatus;
         } else {
           pos++;
@@ -459,6 +480,7 @@
         const channel = status & 0x0f;
 
         if (eventType === 0x90 || eventType === 0x80) {
+          if (pos + 2 > trackEnd) break;
           const noteNum = view.getUint8(pos++);
           const vel = view.getUint8(pos++);
           const isNoteOn = (eventType === 0x90 && vel > 0);
@@ -471,12 +493,13 @@
               if (prevEnd > maxSongTick) maxSongTick = prevEnd;
               trackNotes.push({
                 midi: noteNum,
+                channel: channel,
                 startTick: prevObj.startTick,
                 endTick: prevEnd,
                 velocity: prevObj.vel
               });
             }
-            activeNotes[key] = { startTick: tick, vel: vel / 127, midi: noteNum };
+            activeNotes[key] = { startTick: tick, vel: vel / 127, midi: noteNum, channel: channel };
           } else if (activeNotes[key]) {
             const startObj = activeNotes[key];
             delete activeNotes[key];
@@ -484,59 +507,102 @@
             if (endTick > maxSongTick) maxSongTick = endTick;
             trackNotes.push({
               midi: noteNum,
+              channel: channel,
               startTick: startObj.startTick,
               endTick: endTick,
               velocity: startObj.vel
             });
           }
         } else if (eventType === 0xb0) {
+          if (pos + 2 > trackEnd) break;
           const ccNum = view.getUint8(pos++);
           const ccVal = view.getUint8(pos++);
           if (ccNum === 64) {
-            pedalEvents.push({ tick: tick, down: ccVal >= 64 });
+            pedalEvents.push({ tick: tick, channel: channel, down: ccVal >= 64 });
           }
         } else if (eventType === 0xa0 || eventType === 0xe0) {
+          if (pos + 2 > trackEnd) break;
           pos += 2;
         } else if (eventType === 0xc0 || eventType === 0xd0) {
+          if (pos + 1 > trackEnd) break;
           pos += 1;
         } else if (status === 0xff) {
+          if (pos >= trackEnd) break;
           const metaType = view.getUint8(pos++);
-          const metaLen = readVarLen();
-          if (metaType === 0x51 && metaLen === 3 && pos + 3 <= trackEnd) {
+          const metaLen = readVarLen(trackEnd);
+          const metaEnd = Math.min(trackEnd, pos + metaLen);
+          if (metaType === 0x51 && metaLen === 3 && pos + 3 <= metaEnd) {
             const us = (view.getUint8(pos) << 16) | (view.getUint8(pos + 1) << 8) | view.getUint8(pos + 2);
-            tempoEvents.push({ tick, usPerBeat: us });
-          } else if (metaType === 0x58 && metaLen >= 2 && pos + 2 <= trackEnd) {
+            if (us > 0) tempoEvents.push({ tick, usPerBeat: us });
+          } else if (metaType === 0x58 && metaLen >= 2 && pos + 2 <= metaEnd) {
             const num = Math.max(1, view.getUint8(pos));
             const denPow = view.getUint8(pos + 1);
             const den = Math.max(1, Math.pow(2, denPow));
             timeSigEvents.push({ tick, numerator: num, denominator: den });
           }
-          pos += metaLen;
+          pos = metaEnd;
         } else if (status === 0xf0 || status === 0xf7) {
-          const sysLen = readVarLen();
-          pos += sysLen;
+          const sysLen = readVarLen(trackEnd);
+          pos = Math.min(trackEnd, pos + sysLen);
         } else {
           pos++;
         }
       }
 
+      // Flush any unclosed Note-On events at the end of the track
+      const unclosedKeys = Object.keys(activeNotes);
+      for (let u = 0; u < unclosedKeys.length; u++) {
+        const obj = activeNotes[unclosedKeys[u]];
+        const endTick = Math.max(obj.startTick + 20, tick);
+        if (endTick > maxSongTick) maxSongTick = endTick;
+        trackNotes.push({
+          midi: obj.midi,
+          channel: obj.channel,
+          startTick: obj.startTick,
+          endTick: endTick,
+          velocity: obj.vel
+        });
+      }
+
       if (pedalEvents.length > 0 && trackNotes.length > 0) {
-        pedalEvents.sort((a, b) => a.tick - b.tick);
-        const pedalIntervals = [];
-        let pDownTick = null;
+        const pedalByChannel = {};
         for (let pIdx = 0; pIdx < pedalEvents.length; pIdx++) {
           const pe = pedalEvents[pIdx];
-          if (pe.down && pDownTick === null) {
-            pDownTick = pe.tick;
-          } else if (!pe.down && pDownTick !== null) {
-            if (pe.tick > pDownTick) {
-              pedalIntervals.push([pDownTick, pe.tick]);
-            }
-            pDownTick = null;
-          }
+          if (!pedalByChannel[pe.channel]) pedalByChannel[pe.channel] = [];
+          pedalByChannel[pe.channel].push(pe);
         }
 
-        if (pedalIntervals.length > 0) {
+        const intervalsByChannel = {};
+        let hasAnyPedalIntervals = false;
+        Object.keys(pedalByChannel).forEach(function (chKey) {
+          const chEvents = pedalByChannel[chKey];
+          chEvents.sort((a, b) => a.tick - b.tick);
+          const chIntervals = [];
+          let pDownTick = null;
+          for (let pIdx = 0; pIdx < chEvents.length; pIdx++) {
+            const pe = chEvents[pIdx];
+            if (pe.down && pDownTick === null) {
+              pDownTick = pe.tick;
+            } else if (!pe.down && pDownTick !== null) {
+              if (pe.tick > pDownTick) {
+                chIntervals.push([pDownTick, pe.tick]);
+              }
+              pDownTick = null;
+            }
+          }
+          if (pDownTick !== null) {
+            const closeTick = Math.max(maxSongTick, pDownTick + ticksPerBeat);
+            if (closeTick > pDownTick) {
+              chIntervals.push([pDownTick, closeTick]);
+            }
+          }
+          if (chIntervals.length > 0) {
+            intervalsByChannel[chKey] = chIntervals;
+            hasAnyPedalIntervals = true;
+          }
+        });
+
+        if (hasAnyPedalIntervals) {
           trackNotes.sort((a, b) => a.startTick - b.startTick || a.midi - b.midi);
           const nextSameMidiTick = new Array(trackNotes.length).fill(Infinity);
           const lastTickByMidi = {};
@@ -550,9 +616,11 @@
 
           for (let ti = 0; ti < trackNotes.length; ti++) {
             const tn = trackNotes[ti];
-            for (let pi = 0; pi < pedalIntervals.length; pi++) {
-              const downTick = pedalIntervals[pi][0];
-              const upTick = pedalIntervals[pi][1];
+            const chIntervals = intervalsByChannel[tn.channel];
+            if (!chIntervals) continue;
+            for (let pi = 0; pi < chIntervals.length; pi++) {
+              const downTick = chIntervals[pi][0];
+              const upTick = chIntervals[pi][1];
               if (downTick <= tn.endTick + 20 && upTick > tn.endTick) {
                 const cappedEnd = Math.min(upTick, nextSameMidiTick[ti] - 15);
                 if (cappedEnd > tn.endTick) {
@@ -599,11 +667,24 @@
     if (rawTracks.length >= 2 && !useSmartSplit) {
       const avgs = rawTracks.map(tr => tr.reduce((s, n) => s + n.midi, 0) / tr.length);
       let maxAvgIdx = 0;
+      let minAvgIdx = 0;
       for (let i = 1; i < avgs.length; i++) {
         if (avgs[i] > avgs[maxAvgIdx]) maxAvgIdx = i;
+        if (avgs[i] < avgs[minAvgIdx]) minAvgIdx = i;
       }
+      const sortedAvgs = avgs.slice().sort((a, b) => a - b);
+      const medianAvg = sortedAvgs[Math.floor(sortedAvgs.length / 2)];
       rawTracks.forEach((tr, idx) => {
-        const hand = (idx === maxAvgIdx || avgs[idx] >= 60) ? 'R' : 'L';
+        let hand;
+        if (rawTracks.length === 2) {
+          hand = (idx === maxAvgIdx) ? 'R' : 'L';
+        } else if (idx === maxAvgIdx) {
+          hand = 'R';
+        } else if (idx === minAvgIdx) {
+          hand = 'L';
+        } else {
+          hand = (avgs[idx] >= Math.max(60, medianAvg)) ? 'R' : 'L';
+        }
         tr.forEach(n => {
           const t0 = tickToSeconds(n.startTick);
           const t1 = tickToSeconds(n.endTick);
@@ -676,10 +757,13 @@
       if (beats.length > 4000) break; // Safety cap for extremely long files
     }
 
-    const firstTempo = (tempoEvents && tempoEvents.length > 0) ? tempoEvents[0].usPerBeat : 500000;
+    const initTempoEv = tempoEvents.filter(e => e.tick === 0).pop() || tempoEvents[0];
+    const firstTempo = initTempoEv ? initTempoEv.usPerBeat : 500000;
     const parsedBpm = Math.max(30, Math.min(260, Math.round(60000000 / (firstTempo || 500000))));
-    const firstTimeSig = (timeSigEvents && timeSigEvents.length > 0) ? timeSigEvents[0].numerator : 4;
+    const initTimeSigEv = timeSigEvents.filter(e => e.tick === 0).pop() || timeSigEvents[0];
+    const firstTimeSig = initTimeSigEv ? initTimeSigEv.numerator : 4;
     const parsedBeatsPerBar = Math.max(1, Math.min(12, Number(firstTimeSig) || 4));
+    const parsedBeatType = Math.max(1, Math.min(16, (initTimeSigEv && initTimeSigEv.denominator) || 4));
 
     return {
       title: fileName.replace(/\.(mid|midi)$/i, ''),
@@ -688,6 +772,7 @@
       beats: beats,
       bpm: parsedBpm,
       beatsPerBar: parsedBeatsPerBar,
+      beatType: parsedBeatType,
       gridOffset: 0.8
     };
   }
@@ -718,15 +803,18 @@
       }
       if (minM > maxM) { minM = 48; maxM = 72; }
 
-      let lowC = Math.floor(minM / 12) * 12;
-      let highC = Math.ceil((maxM + 1) / 12) * 12;
+      let lowC = Math.max(21, Math.floor(minM / 12) * 12);
+      let highC = Math.min(108, Math.ceil((maxM + 1) / 12) * 12);
 
       while (highC - lowC < 24) {
-        if (lowC >= 36) lowC -= 12;
-        if (highC - lowC < 24 && highC <= 96) highC += 12;
+        const prevLow = lowC;
+        const prevHigh = highC;
+        if (lowC > 21) lowC = Math.max(21, lowC - 12);
+        if (highC - lowC < 24 && highC < 108) highC = Math.min(108, highC + 12);
+        if (lowC === prevLow && highC === prevHigh) break;
       }
-      state.minMidi = Math.max(21, lowC);
-      state.maxMidi = Math.min(108, highC);
+      state.minMidi = lowC;
+      state.maxMidi = highC;
     }
 
     const badge = document.getElementById('activeRangeBadge');
