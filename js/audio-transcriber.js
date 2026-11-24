@@ -59,7 +59,9 @@
         isCustom: songObj.isCustom !== undefined ? !!songObj.isCustom : true,
         isModifiedBuiltin: !!songObj.isModifiedBuiltin,
         source: songObj.source || 'custom',
-        createdAt: songObj.createdAt || Date.now()
+        createdAt: songObj.createdAt || Date.now(),
+        lyrics: Array.isArray(songObj.lyrics) ? songObj.lyrics : undefined,
+        chordSheet: (songObj.chordSheet && typeof songObj.chordSheet === 'object') ? songObj.chordSheet : undefined
       };
       try {
         const db = await openSongDB();
@@ -182,6 +184,46 @@
           beatsArr = global.generateBeatGrid(songDur, (60 / safeBpm) * (4 / safeBeatType), safeBeatsPerBar, safeGridOffset);
         }
 
+        const sanitizedLyrics = Array.isArray(s.lyrics)
+          ? s.lyrics.map(line => {
+            if (!line || typeof line !== 'object') return null;
+            const startT = Math.max(0, Number(line.time) || 0);
+            return {
+              section: String(line.section || '').slice(0, 60),
+              instrumental: !!line.instrumental,
+              text: String(line.text || '').slice(0, 240),
+              time: startT,
+              endTime: Math.max(startT, Number(line.endTime) || startT),
+              segments: Array.isArray(line.segments)
+                ? line.segments.map(seg => ({
+                  text: String((seg && seg.text) || '').slice(0, 240),
+                  chordSymbol: String((seg && seg.chordSymbol) || '').slice(0, 24),
+                  time: Math.max(0, Number(seg && seg.time) || 0),
+                  endTime: Math.max(0, Number(seg && seg.endTime) || 0)
+                }))
+                : [],
+              chordTimeline: Array.isArray(line.chordTimeline)
+                ? line.chordTimeline.map(c => ({
+                  symbol: String((c && c.symbol) || '').slice(0, 24),
+                  time: Math.max(0, Number(c && c.time) || 0),
+                  endTime: Math.max(0, Number(c && c.endTime) || 0)
+                }))
+                : []
+            };
+          }).filter(Boolean)
+          : undefined;
+
+        const sanitizedChordSheet = (s.chordSheet && typeof s.chordSheet === 'object' && typeof s.chordSheet.text === 'string')
+          ? {
+            text: s.chordSheet.text.slice(0, 50000),
+            bpm: Math.max(30, Math.min(260, Number(s.chordSheet.bpm) || safeBpm)),
+            beatsPerBar: Math.max(1, Math.min(6, Math.round(Number(s.chordSheet.beatsPerBar) || safeBeatsPerBar))),
+            defaultChordBeats: Math.max(1, Math.min(6, Math.round(Number(s.chordSheet.defaultChordBeats) || 4))),
+            capo: Math.max(0, Math.min(11, Math.round(Number(s.chordSheet.capo) || 0))),
+            pattern: ['block', 'ballad', 'arpeggio', 'groove'].includes(s.chordSheet.pattern) ? s.chordSheet.pattern : 'ballad'
+          }
+          : undefined;
+
         const validSong = {
           id: rawId,
           title: String(s.title || 'Untitled Song').slice(0, 100),
@@ -206,7 +248,9 @@
           isCustom: s.isCustom !== undefined ? !!s.isCustom : true,
           isModifiedBuiltin: !!s.isModifiedBuiltin,
           source: s.source || 'backup-restore',
-          createdAt: s.createdAt || Date.now()
+          createdAt: s.createdAt || Date.now(),
+          lyrics: sanitizedLyrics,
+          chordSheet: sanitizedChordSheet
         };
         await this.saveSong(validSong);
         imported.push(validSong);

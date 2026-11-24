@@ -11,7 +11,7 @@
   <link rel="apple-touch-icon" sizes="180x180" href="assets/icon-180.png" />
   <link rel="icon" type="image/png" href="assets/icon-180.png" />
   <link rel="manifest" href="manifest.json" />
-  <link rel="stylesheet" href="css/styles.css?v=4.11" />
+  <link rel="stylesheet" href="css/styles.css?v=4.12" />
 </head>
 <body>
   <div id="appShell">
@@ -34,6 +34,7 @@
 
           <div class="home-filter-group" role="tablist" aria-label="Filter songs by source">
             <button type="button" class="home-filter-btn active" data-filter="all">All Songs</button>
+            <button type="button" class="home-filter-btn" data-filter="chords">Chord Sheets</button>
             <button type="button" class="home-filter-btn" data-filter="ai">AI Audio</button>
             <button type="button" class="home-filter-btn" data-filter="midi">MIDI Uploads</button>
             <button type="button" class="home-filter-btn" data-filter="builtin">Built-In Classics</button>
@@ -152,6 +153,13 @@
       </div>
 
       <div class="hud-row" style="font-size:12px;">
+        <span>Show Synced Lyrics</span>
+        <button id="lyricsSwitch" class="switch-btn active-blue" aria-label="Toggle Synced Lyrics">
+          <span class="switch-thumb"></span>
+        </button>
+      </div>
+
+      <div class="hud-row" style="font-size:12px;">
         <span>Show Measure &amp; Beat Grid</span>
         <button id="measureGridSwitch" class="switch-btn active-blue" aria-label="Toggle Measure and Beat Grid">
           <span class="switch-thumb"></span>
@@ -186,6 +194,16 @@
       <div id="chordBadge" class="chord-detector-badge" style="display:none;">
         <span id="chordSymbolText" class="chord-symbol-text">C</span>
         <span id="chordNotesText" class="chord-notes-text">C - E - G</span>
+      </div>
+
+      <!-- Synced Lyrics & Section Teleprompter (Chord Sheet Songs) -->
+      <div id="lyricsOverlay" class="lyrics-overlay" style="display:none;" aria-live="polite">
+        <div class="lyrics-meta-row">
+          <span id="lyricsSectionBadge" class="lyrics-section-pill">Verse 1</span>
+          <span id="lyricsActiveChordBadge" class="lyrics-chord-pill">C</span>
+        </div>
+        <div id="lyricsCurrentLine" class="lyrics-current-line"></div>
+        <div id="lyricsNextLine" class="lyrics-next-line"></div>
       </div>
 
       <!-- 1-Bar Count-In Overlay (1 - 2 - 3 - 4) -->
@@ -494,6 +512,136 @@
               <span>Turn any song recording into playable falling piano notes</span>
             </span>
           </button>
+          <button id="homeOpenChordModalBtn" type="button" class="add-song-card-btn card-chords" title="Paste chords and lyrics with optional timing to create falling piano notes">
+            <span class="add-song-card-icon">🎼</span>
+            <span class="add-song-card-text">
+              <strong>Chord Sheet (Chords &amp; Lyrics)</strong>
+              <span>Paste chords with optional timing like (1.5 bars), instrumental parts &amp; synced lyrics</span>
+            </span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ==================== CHORD SHEET & SYNCED LYRICS IMPORTER MODAL ==================== -->
+    <div id="chordSheetModal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="chordSheetModalTitle">
+      <div class="modal-card chord-modal-card">
+        <div class="modal-header">
+          <div class="modal-header-title-wrap">
+            <span class="modal-badge chords">CHORDS</span>
+            <h2 id="chordSheetModalTitle" class="modal-title">Chord Sheet &rarr; Falling Piano Notes</h2>
+          </div>
+          <div style="display:flex; align-items:center; gap:8px;">
+            <button id="chordLoadExampleBtn" type="button" class="ui-btn" style="padding:4px 10px; font-size:11.5px;">Load Example</button>
+            <button id="closeChordSheetModalBtn" type="button" class="ui-btn icon-btn" title="Close" aria-label="Close Modal">&times;</button>
+          </div>
+        </div>
+
+        <div class="modal-body chord-modal-body">
+          <div class="modal-field">
+            <label for="chordSongTitleInput" class="modal-label">Song Title</label>
+            <input id="chordSongTitleInput" type="text" class="modal-text-input" placeholder="e.g. Let It Be (Piano Chords)" />
+          </div>
+
+          <div class="chord-controls-grid">
+            <div class="modal-field">
+              <label for="chordBpmInput" class="modal-label">Tempo (BPM)</label>
+              <input id="chordBpmInput" type="number" min="30" max="260" value="90" class="modal-text-input" />
+            </div>
+
+            <div class="modal-field">
+              <label for="chordBeatsPerBarSelect" class="modal-label">Beats / Bar</label>
+              <select id="chordBeatsPerBarSelect" class="ui-select" style="width:100%;">
+                <option value="1">1 beat / bar</option>
+                <option value="2">2 beats / bar</option>
+                <option value="3">3 beats / bar</option>
+                <option value="4" selected>4 beats / bar</option>
+                <option value="5">5 beats / bar</option>
+                <option value="6">6 beats / bar</option>
+              </select>
+            </div>
+
+            <div class="modal-field">
+              <label for="chordDefaultBeatsSelect" class="modal-label">Default Chord Length</label>
+              <select id="chordDefaultBeatsSelect" class="ui-select" style="width:100%;">
+                <option value="1">1 beat</option>
+                <option value="2">2 beats</option>
+                <option value="3">3 beats</option>
+                <option value="4" selected>4 beats</option>
+                <option value="5">5 beats</option>
+                <option value="6">6 beats</option>
+              </select>
+            </div>
+
+            <div class="modal-field">
+              <label for="chordCapoSelect" class="modal-label">Capo Transpose</label>
+              <select id="chordCapoSelect" class="ui-select" style="width:100%;">
+                <option value="0" selected>No Capo (0)</option>
+                <option value="1">Capo 1 (+1)</option>
+                <option value="2">Capo 2 (+2)</option>
+                <option value="3">Capo 3 (+3)</option>
+                <option value="4">Capo 4 (+4)</option>
+                <option value="5">Capo 5 (+5)</option>
+                <option value="6">Capo 6 (+6)</option>
+                <option value="7">Capo 7 (+7)</option>
+                <option value="8">Capo 8 (+8)</option>
+                <option value="9">Capo 9 (+9)</option>
+                <option value="10">Capo 10 (+10)</option>
+                <option value="11">Capo 11 (+11)</option>
+              </select>
+            </div>
+
+            <div class="modal-field">
+              <label for="chordPatternSelect" class="modal-label">Piano Style</label>
+              <select id="chordPatternSelect" class="ui-select" style="width:100%;">
+                <option value="ballad" selected>Ballad Pulse</option>
+                <option value="block">Block Chords</option>
+                <option value="arpeggio">Rolling Arpeggio</option>
+                <option value="groove">Pop Groove</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="chord-syntax-hint">
+            Use <code>G (1.5 bars)</code> or <code>Am (2b)</code> for held/short chords, <code>| Am F |</code> to split a bar, <code>N.C.</code> for rests, and omit lyrics for <code>[Intro]</code> / <code>[Solo]</code> sections.
+          </div>
+
+          <div class="modal-field">
+            <label for="chordSheetTextarea" class="modal-label">Chords &amp; Lyrics</label>
+            <textarea id="chordSheetTextarea" class="chord-textarea" rows="7" spellcheck="false" placeholder="[Intro]&#10;| C | G | Am F |&#10;&#10;[Verse 1]&#10;C                 G (1.5 bars)&#10;Paste your chord chart here..."></textarea>
+          </div>
+
+          <div class="chord-preview-panel">
+            <div class="chord-preview-header">
+              <span class="modal-label">Timing Strip (Tap a chord to adjust duration)</span>
+              <span id="chordPreviewSummary" class="chord-preview-summary">Paste chords above to preview</span>
+            </div>
+            <div id="chordPreviewStrip" class="chord-preview-strip"></div>
+
+            <div id="chordDurationEditor" class="chord-duration-bar" style="display:none;">
+              <span id="chordDurationSelectedLabel" class="chord-duration-label">G • 4b</span>
+              <div class="chord-duration-btns">
+                <button type="button" class="ui-btn chord-nudge-btn" data-mode="delta" data-val="-0.5">-0.5b</button>
+                <button type="button" class="ui-btn chord-nudge-btn" data-mode="delta" data-val="0.5">+0.5b</button>
+                <button type="button" class="ui-btn chord-nudge-btn" data-mode="set" data-val="1">1b</button>
+                <button type="button" class="ui-btn chord-nudge-btn" data-mode="set" data-val="2">2b</button>
+                <button type="button" class="ui-btn chord-nudge-btn" data-mode="set" data-val="3">3b</button>
+                <button type="button" class="ui-btn chord-nudge-btn" data-mode="set" data-val="4">4b</button>
+                <button type="button" class="ui-btn chord-nudge-btn" data-mode="set" data-val="6">6b</button>
+                <button type="button" class="ui-btn chord-nudge-btn" data-mode="bars" data-val="1.5">1.5 bars</button>
+              </div>
+            </div>
+          </div>
+
+          <div id="chordImportError" class="transcribe-error-box" style="display:none;"></div>
+        </div>
+
+        <div class="modal-footer">
+          <button id="cancelChordSheetBtn" type="button" class="ui-btn">Cancel</button>
+          <button id="previewChordAudioBtn" type="button" class="ui-btn" disabled>&#9654; Preview Chords</button>
+          <button id="generateChordSongBtn" type="button" class="ui-btn ui-btn-emerald" disabled>
+            <span>Generate &amp; Play</span>
+          </button>
         </div>
       </div>
     </div>
@@ -592,10 +740,11 @@
   </div>
 
   <!-- Modular Application Scripts (Zero Build Step Required) -->
-  <script src="js/songs.js?v=4.11"></script>
-  <script src="js/midi-parser.js?v=4.11"></script>
-  <script src="js/audio-transcriber.js?v=4.11"></script>
-  <script src="js/audio.js?v=4.11"></script>
-  <script src="js/app.js?v=4.11"></script>
+  <script src="js/songs.js?v=4.12"></script>
+  <script src="js/midi-parser.js?v=4.12"></script>
+  <script src="js/audio-transcriber.js?v=4.12"></script>
+  <script src="js/chord-importer.js?v=4.12"></script>
+  <script src="js/audio.js?v=4.12"></script>
+  <script src="js/app.js?v=4.12"></script>
 </body>
 </html>

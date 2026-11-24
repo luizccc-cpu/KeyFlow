@@ -12,6 +12,7 @@
   const extendChordLegato = global.extendChordLegato;
   const audioEngine = global.audioEngine;
   const audioTranscriber = global.audioTranscriber;
+  const chordImporter = global.chordImporter;
 
   // Enrich built-in songs with metadata and save pristine factory copies for Reset
   const BUILTIN_IDS = ['let_it_be', 'imagine', 'clair_de_lune', 'gymnopedie', 'pyramid_song'];
@@ -117,6 +118,7 @@
 
     // Phase 4B: Chord Detector, Metronome, Count-In & Accuracy
     showChordDetector: true,
+    showLyrics: true,
     metronomeOn: false,
     countInOn: false,
     isCountingIn: false,
@@ -1219,6 +1221,7 @@
     advanceClock(dt);
     renderFrame(dt);
     updateLiveChordUI();
+    updateSyncedLyricsUI();
 
     needsRender = false;
     if (needsContinuousFrames() || needsRender) {
@@ -1445,6 +1448,114 @@
       chordBadgeEl.classList.add('pop');
     }
     chordBadgeEl.style.display = 'flex';
+  }
+
+  let lastLyricsRenderKey = '';
+  let lyricsOverlayEl = null;
+  let lyricsSectionBadgeEl = null;
+  let lyricsActiveChordBadgeEl = null;
+  let lyricsCurrentLineEl = null;
+  let lyricsNextLineEl = null;
+
+  function updateSyncedLyricsUI() {
+    if (!lyricsOverlayEl) {
+      lyricsOverlayEl = document.getElementById('lyricsOverlay');
+      lyricsSectionBadgeEl = document.getElementById('lyricsSectionBadge');
+      lyricsActiveChordBadgeEl = document.getElementById('lyricsActiveChordBadge');
+      lyricsCurrentLineEl = document.getElementById('lyricsCurrentLine');
+      lyricsNextLineEl = document.getElementById('lyricsNextLine');
+    }
+    if (!lyricsOverlayEl) return;
+
+    const hasLyrics = state.song && Array.isArray(state.song.lyrics) && state.song.lyrics.length > 0;
+    if (state.viewMode !== 'play' || !state.showLyrics || !hasLyrics) {
+      if (lastLyricsRenderKey !== '__hidden__') {
+        lyricsOverlayEl.style.display = 'none';
+        lastLyricsRenderKey = '__hidden__';
+      }
+      return;
+    }
+
+    const lines = state.song.lyrics;
+    const curT = state.currentTime;
+    let lineIdx = 0;
+    if (curT >= lines[0].time) {
+      for (let i = 0; i < lines.length; i++) {
+        if (lines[i].time <= curT + 0.06) lineIdx = i;
+        else break;
+      }
+    }
+
+    const line = lines[lineIdx];
+    const timeline = Array.isArray(line.chordTimeline) ? line.chordTimeline : [];
+    let activeChordSym = timeline.length > 0 ? (timeline[0].symbol || '') : '';
+    for (let c = 0; c < timeline.length; c++) {
+      if (timeline[c].time <= curT + 0.04) activeChordSym = timeline[c].symbol || '';
+      else break;
+    }
+
+    const segments = Array.isArray(line.segments) ? line.segments : [];
+    let activeSegIdx = -1;
+    if (!line.instrumental && curT >= line.time - 0.02 && segments.length > 0) {
+      for (let s = 0; s < segments.length; s++) {
+        if (segments[s].time <= curT + 0.04) activeSegIdx = s;
+        else break;
+      }
+    }
+
+    const renderKey = (state.activeSongId || '') + '|' + lineIdx + '|' + activeSegIdx + '|' + activeChordSym + '|' + (state.showChordDetector ? 1 : 0);
+    if (renderKey === lastLyricsRenderKey) return;
+    lastLyricsRenderKey = renderKey;
+
+    lyricsOverlayEl.classList.toggle('compact-top', !state.showChordDetector);
+
+    if (lyricsSectionBadgeEl) {
+      const sec = line.section || (line.instrumental ? 'Instrumental' : 'Lyrics');
+      lyricsSectionBadgeEl.textContent = sec;
+      lyricsSectionBadgeEl.style.display = sec ? '' : 'none';
+    }
+    if (lyricsActiveChordBadgeEl) {
+      lyricsActiveChordBadgeEl.textContent = activeChordSym;
+      lyricsActiveChordBadgeEl.style.display = activeChordSym ? '' : 'none';
+    }
+
+    if (lyricsCurrentLineEl) {
+      lyricsCurrentLineEl.textContent = '';
+      if (line.instrumental || !line.text) {
+        const instSpan = document.createElement('span');
+        instSpan.className = 'lyric-instrumental';
+        instSpan.textContent = 'Instrumental — follow the chord progression';
+        lyricsCurrentLineEl.appendChild(instSpan);
+      } else if (segments.length > 0) {
+        for (let s = 0; s < segments.length; s++) {
+          const span = document.createElement('span');
+          span.className = (s === activeSegIdx) ? 'lyric-seg active' : 'lyric-seg';
+          span.textContent = segments[s].text || '';
+          lyricsCurrentLineEl.appendChild(span);
+        }
+      } else {
+        const lineSpan = document.createElement('span');
+        lineSpan.className = 'lyric-seg active';
+        lineSpan.textContent = line.text;
+        lyricsCurrentLineEl.appendChild(lineSpan);
+      }
+    }
+
+    if (lyricsNextLineEl) {
+      const nextLine = lineIdx + 1 < lines.length ? lines[lineIdx + 1] : null;
+      if (!nextLine) {
+        lyricsNextLineEl.style.display = 'none';
+        lyricsNextLineEl.textContent = '';
+      } else {
+        const previewText = nextLine.instrumental || !nextLine.text
+          ? '[' + (nextLine.section || 'Instrumental') + ']'
+          : nextLine.text;
+        lyricsNextLineEl.textContent = 'Next: ' + previewText;
+        lyricsNextLineEl.style.display = '';
+      }
+    }
+
+    lyricsOverlayEl.style.display = '';
   }
 
   /********************************************************************
@@ -2065,6 +2176,8 @@
     analyzeSongConfidence(state.song);
     syncEditorInspectorUI();
     syncUndoRedoUI();
+    lastLyricsRenderKey = '';
+    updateSyncedLyricsUI();
   }
 
   function applySongSnapshot(snap) {
@@ -2503,6 +2616,12 @@
         else { transM.classList.remove('open'); transM.setAttribute('aria-hidden', 'true'); }
         closedOverlay = true;
       }
+      const chordM = document.getElementById('chordSheetModal');
+      if (chordM && chordM.classList.contains('open')) {
+        if (typeof setChordSheetModalOpen === 'function') setChordSheetModalOpen(false);
+        else { chordM.classList.remove('open'); chordM.setAttribute('aria-hidden', 'true'); }
+        closedOverlay = true;
+      }
       const setPop = document.getElementById('settingsPopover');
       if (setPop && setPop.classList.contains('open')) {
         setPop.classList.remove('open');
@@ -2530,7 +2649,7 @@
         return;
       }
     }
-    if (e.target && (e.target.tagName === 'SELECT' || e.target.tagName === 'INPUT')) return;
+    if (e.target && (e.target.tagName === 'SELECT' || e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable)) return;
     if (state.viewMode === 'home') return;
 
     const k = String(e.key || '').toLowerCase();
@@ -2594,6 +2713,7 @@
   });
 
   window.addEventListener('keyup', function (e) {
+    if (e.target && (e.target.tagName === 'SELECT' || e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable)) return;
     const k = String(e.key || '').toLowerCase();
     if (KEY_OFFSETS[k] !== undefined) {
       delete heldKeys[k];
@@ -2665,6 +2785,7 @@
   const homeViewCardsBtn = document.getElementById('homeViewCardsBtn');
   const homeViewCompactBtn = document.getElementById('homeViewCompactBtn');
   const homeOpenAiModalBtn = document.getElementById('homeOpenAiModalBtn');
+  const homeOpenChordModalBtn = document.getElementById('homeOpenChordModalBtn');
   const homeAddSongBtn = document.getElementById('homeAddSongBtn');
   const addSongModal = document.getElementById('addSongModal');
   const closeAddSongModalBtn = document.getElementById('closeAddSongModalBtn');
@@ -2755,6 +2876,7 @@
   function getSongSourceCategory(songObj) {
     if (!songObj) return 'builtin';
     const src = String(songObj.source || '').toLowerCase();
+    if (src.indexOf('chord') !== -1) return 'chords';
     if (src.indexOf('ai') !== -1) return 'ai';
     if (src.indexOf('midi') !== -1) return 'midi';
     if (songObj.isCustom) return 'midi';
@@ -2887,7 +3009,10 @@
       badgesRow.className = 'song-card-badges';
 
       const srcBadge = document.createElement('span');
-      if (cat === 'ai') {
+      if (cat === 'chords') {
+        srcBadge.className = 'song-badge chords';
+        srcBadge.textContent = 'Chord Sheet';
+      } else if (cat === 'ai') {
         srcBadge.className = 'song-badge ai';
         srcBadge.textContent = 'AI Audio';
       } else if (cat === 'midi') {
@@ -2950,6 +3075,17 @@
       });
 
       actionsRow.appendChild(editBtn);
+      if (s.chordSheet && typeof s.chordSheet.text === 'string' && typeof openChordSheetModal === 'function') {
+        const editChordsBtn = document.createElement('button');
+        editChordsBtn.type = 'button';
+        editChordsBtn.className = 'ui-btn';
+        editChordsBtn.title = 'Edit chord progression, timing, or style';
+        editChordsBtn.textContent = '✎ Chords';
+        editChordsBtn.addEventListener('click', function () {
+          openChordSheetModal(s);
+        });
+        actionsRow.appendChild(editChordsBtn);
+      }
       actionsRow.appendChild(midiBtn);
 
       if (s.isCustom || s.isModifiedBuiltin) {
@@ -3038,6 +3174,8 @@
       resetNoteTriggersBefore(state.currentTime);
       rebuildKeyboardGeometry();
     }
+    lastLyricsRenderKey = '';
+    updateSyncedLyricsUI();
     requestRender();
   }
 
@@ -3089,6 +3227,8 @@
     analyzeSongConfidence(state.song);
     syncEditorInspectorUI();
     syncUndoRedoUI();
+    lastLyricsRenderKey = '';
+    updateSyncedLyricsUI();
   }
 
   // Home View & Top Bar Navigation Listeners
@@ -3884,6 +4024,19 @@
       if (chordBadge && !state.showChordDetector) {
         chordBadge.style.display = 'none';
       }
+      lastLyricsRenderKey = '';
+      updateSyncedLyricsUI();
+      requestRender();
+    });
+  }
+
+  const lyricsSwitch = document.getElementById('lyricsSwitch');
+  if (lyricsSwitch) {
+    lyricsSwitch.addEventListener('click', function (e) {
+      state.showLyrics = !state.showLyrics;
+      e.currentTarget.classList.toggle('active-blue', state.showLyrics);
+      lastLyricsRenderKey = '';
+      updateSyncedLyricsUI();
       requestRender();
     });
   }
@@ -4427,6 +4580,415 @@
         if (transcribeErrorBox) {
           transcribeErrorBox.style.display = 'block';
           transcribeErrorBox.textContent = (err && err.message) ? err.message : 'Could not transcribe audio file.';
+        }
+      }
+    });
+  }
+
+  // ==================== CHORD SHEET & SYNCED LYRICS MODAL CONTROLLER ====================
+  const chordSheetModal = document.getElementById('chordSheetModal');
+  const closeChordSheetModalBtn = document.getElementById('closeChordSheetModalBtn');
+  const cancelChordSheetBtn = document.getElementById('cancelChordSheetBtn');
+  const chordLoadExampleBtn = document.getElementById('chordLoadExampleBtn');
+  const chordSongTitleInput = document.getElementById('chordSongTitleInput');
+  const chordBpmInput = document.getElementById('chordBpmInput');
+  const chordBeatsPerBarSelect = document.getElementById('chordBeatsPerBarSelect');
+  const chordDefaultBeatsSelect = document.getElementById('chordDefaultBeatsSelect');
+  const chordCapoSelect = document.getElementById('chordCapoSelect');
+  const chordPatternSelect = document.getElementById('chordPatternSelect');
+  const chordSheetTextarea = document.getElementById('chordSheetTextarea');
+  const chordPreviewSummary = document.getElementById('chordPreviewSummary');
+  const chordPreviewStrip = document.getElementById('chordPreviewStrip');
+  const chordDurationEditor = document.getElementById('chordDurationEditor');
+  const chordDurationSelectedLabel = document.getElementById('chordDurationSelectedLabel');
+  const chordImportError = document.getElementById('chordImportError');
+  const previewChordAudioBtn = document.getElementById('previewChordAudioBtn');
+  const generateChordSongBtn = document.getElementById('generateChordSongBtn');
+
+  let editingChordSongId = null;
+  let editingChordCreatedAt = null;
+  let clearChordDraftOnNew = true;
+  let lastParsedChordSheet = null;
+  let selectedChordEventIdx = -1;
+  let userEditedDefaultBeats = false;
+  let metaAutoAppliedText = false;
+  let chordPreviewTimers = [];
+  let isPreviewingChords = false;
+
+  function stopChordAudioPreview() {
+    for (let i = 0; i < chordPreviewTimers.length; i++) {
+      clearTimeout(chordPreviewTimers[i]);
+    }
+    chordPreviewTimers = [];
+    if (isPreviewingChords && audioEngine && typeof audioEngine.stopAll === 'function') {
+      audioEngine.stopAll();
+    }
+    isPreviewingChords = false;
+    if (previewChordAudioBtn) {
+      previewChordAudioBtn.textContent = '▶ Preview Chords';
+    }
+  }
+
+  function setChordSheetModalOpen(open) {
+    if (!chordSheetModal) return;
+    chordSheetModal.classList.toggle('open', !!open);
+    chordSheetModal.setAttribute('aria-hidden', open ? 'false' : 'true');
+    if (!open) {
+      stopChordAudioPreview();
+    }
+  }
+
+  function readChordImportOptions() {
+    const bpmVal = chordBpmInput ? Math.max(30, Math.min(260, Math.round(Number(chordBpmInput.value) || 90))) : 90;
+    const bpbVal = chordBeatsPerBarSelect ? Math.max(1, Math.min(6, Math.round(Number(chordBeatsPerBarSelect.value) || 4))) : 4;
+    const defBeatsVal = chordDefaultBeatsSelect ? Math.max(1, Math.min(6, Math.round(Number(chordDefaultBeatsSelect.value) || bpbVal))) : bpbVal;
+    const capoVal = chordCapoSelect ? Math.max(0, Math.min(11, Math.round(Number(chordCapoSelect.value) || 0))) : 0;
+    const patVal = chordPatternSelect ? chordPatternSelect.value : 'ballad';
+    return {
+      title: chordSongTitleInput ? chordSongTitleInput.value : '',
+      bpm: bpmVal,
+      beatsPerBar: bpbVal,
+      defaultChordBeats: defBeatsVal,
+      capo: capoVal,
+      pattern: patVal
+    };
+  }
+
+  function updateChordDurationEditorUI(parsed, opts) {
+    if (!chordDurationEditor) return;
+    const ev = parsed && Array.isArray(parsed.events) && selectedChordEventIdx >= 0 && selectedChordEventIdx < parsed.events.length
+      ? parsed.events[selectedChordEventIdx]
+      : null;
+
+    if (!ev) {
+      chordDurationEditor.style.display = 'none';
+      return;
+    }
+
+    const disp = chordImporter && typeof chordImporter.transposeChord === 'function'
+      ? chordImporter.transposeChord(ev.parsed, opts.capo)
+      : ev.parsed;
+    const sym = disp ? disp.symbol : ev.symbol;
+    const durLabel = chordImporter && typeof chordImporter.formatDurationLabel === 'function'
+      ? chordImporter.formatDurationLabel(ev.durationBeats, opts.beatsPerBar)
+      : (ev.durationBeats + 'b');
+
+    if (chordDurationSelectedLabel) {
+      chordDurationSelectedLabel.textContent = sym + ' (' + (ev.section || 'Main') + ') • ' + durLabel;
+    }
+    chordDurationEditor.style.display = '';
+  }
+
+  function refreshChordPreview() {
+    if (!chordImporter || !chordSheetTextarea) return;
+    if (chordImportError) {
+      chordImportError.style.display = 'none';
+      chordImportError.textContent = '';
+    }
+
+    const rawText = chordSheetTextarea.value || '';
+    let opts = readChordImportOptions();
+    let parsed = chordImporter.parseChordSheet(rawText, opts);
+
+    if (!metaAutoAppliedText && parsed && parsed.detectedMeta) {
+      const meta = parsed.detectedMeta;
+      let changed = false;
+      if (meta.title && chordSongTitleInput && !chordSongTitleInput.value.trim()) {
+        chordSongTitleInput.value = meta.title;
+      }
+      if (typeof meta.bpm === 'number' && chordBpmInput) {
+        chordBpmInput.value = String(meta.bpm);
+        changed = true;
+      }
+      if (typeof meta.beatsPerBar === 'number' && chordBeatsPerBarSelect) {
+        chordBeatsPerBarSelect.value = String(meta.beatsPerBar);
+        if (!userEditedDefaultBeats && chordDefaultBeatsSelect) {
+          chordDefaultBeatsSelect.value = String(meta.beatsPerBar);
+        }
+        changed = true;
+      }
+      if (typeof meta.capo === 'number' && chordCapoSelect) {
+        chordCapoSelect.value = String(meta.capo);
+        changed = true;
+      }
+      if (parsed.events.length > 0 || changed) {
+        metaAutoAppliedText = true;
+      }
+      if (changed) {
+        opts = readChordImportOptions();
+        parsed = chordImporter.parseChordSheet(rawText, opts);
+      }
+    }
+
+    lastParsedChordSheet = parsed;
+    if (selectedChordEventIdx >= parsed.events.length) {
+      selectedChordEventIdx = -1;
+    }
+
+    const playableCount = parsed.events.filter(function (ev) { return !ev.parsed.isRest; }).length;
+    if (previewChordAudioBtn) previewChordAudioBtn.disabled = playableCount === 0;
+    if (generateChordSongBtn) generateChordSongBtn.disabled = playableCount === 0;
+
+    if (chordPreviewSummary) {
+      if (parsed.events.length === 0) {
+        chordPreviewSummary.textContent = 'Paste chords above to preview timing';
+      } else {
+        const vocalLinesCount = parsed.lyricLines.filter(function (l) { return !l.instrumental && l.text; }).length;
+        chordPreviewSummary.textContent = playableCount + ' chords • ' + parsed.totalBars + ' bars • '
+          + formatTime(parsed.estimatedDurationSec)
+          + (vocalLinesCount > 0 ? ' • ' + vocalLinesCount + ' lyric lines' : ' • Instrumental');
+      }
+    }
+
+    if (chordPreviewStrip) {
+      chordPreviewStrip.textContent = '';
+      let lastSection = '';
+      for (let i = 0; i < parsed.events.length; i++) {
+        const ev = parsed.events[i];
+        if (ev.section && ev.section !== lastSection) {
+          lastSection = ev.section;
+          const secEl = document.createElement('span');
+          secEl.className = 'chord-section-tag';
+          secEl.textContent = ev.section;
+          chordPreviewStrip.appendChild(secEl);
+        }
+
+        const chip = document.createElement('button');
+        chip.type = 'button';
+        chip.className = 'chord-chip'
+          + (ev.parsed.isRest ? ' rest' : '')
+          + (i === selectedChordEventIdx ? ' selected' : '');
+
+        const disp = chordImporter.transposeChord(ev.parsed, opts.capo);
+        const symSpan = document.createElement('span');
+        symSpan.textContent = disp ? disp.symbol : ev.symbol;
+        const durSpan = document.createElement('span');
+        durSpan.className = 'chord-chip-dur';
+        durSpan.textContent = chordImporter.formatDurationLabel(ev.durationBeats, opts.beatsPerBar);
+
+        chip.appendChild(symSpan);
+        chip.appendChild(durSpan);
+        chip.addEventListener('click', (function (idx) {
+          return function () {
+            selectedChordEventIdx = (selectedChordEventIdx === idx) ? -1 : idx;
+            refreshChordPreview();
+          };
+        })(i));
+        chordPreviewStrip.appendChild(chip);
+      }
+    }
+
+    updateChordDurationEditorUI(parsed, opts);
+  }
+
+  function openChordSheetModal(existingSong) {
+    stopChordAudioPreview();
+    selectedChordEventIdx = -1;
+    if (chordImportError) {
+      chordImportError.style.display = 'none';
+      chordImportError.textContent = '';
+    }
+
+    if (existingSong && existingSong.chordSheet) {
+      const cs = existingSong.chordSheet;
+      editingChordSongId = existingSong.id;
+      editingChordCreatedAt = existingSong.createdAt || Date.now();
+      clearChordDraftOnNew = true;
+      userEditedDefaultBeats = true;
+      metaAutoAppliedText = true;
+      if (chordSongTitleInput) chordSongTitleInput.value = existingSong.title || '';
+      if (chordBpmInput) chordBpmInput.value = String(cs.bpm || existingSong.bpm || 90);
+      if (chordBeatsPerBarSelect) chordBeatsPerBarSelect.value = String(Math.max(1, Math.min(6, cs.beatsPerBar || 4)));
+      if (chordDefaultBeatsSelect) chordDefaultBeatsSelect.value = String(Math.max(1, Math.min(6, cs.defaultChordBeats || cs.beatsPerBar || 4)));
+      if (chordCapoSelect) chordCapoSelect.value = String(cs.capo || 0);
+      if (chordPatternSelect) chordPatternSelect.value = cs.pattern || 'ballad';
+      if (chordSheetTextarea) chordSheetTextarea.value = cs.text || '';
+      if (generateChordSongBtn) {
+        const sp = generateChordSongBtn.querySelector('span') || generateChordSongBtn;
+        sp.textContent = 'Save & Play';
+      }
+    } else {
+      const shouldReset = editingChordSongId !== null || clearChordDraftOnNew;
+      editingChordSongId = null;
+      editingChordCreatedAt = null;
+      clearChordDraftOnNew = false;
+      if (shouldReset) {
+        userEditedDefaultBeats = false;
+        metaAutoAppliedText = false;
+        if (chordSongTitleInput) chordSongTitleInput.value = '';
+        if (chordBpmInput) chordBpmInput.value = '90';
+        if (chordBeatsPerBarSelect) chordBeatsPerBarSelect.value = '4';
+        if (chordDefaultBeatsSelect) chordDefaultBeatsSelect.value = '4';
+        if (chordCapoSelect) chordCapoSelect.value = '0';
+        if (chordPatternSelect) chordPatternSelect.value = 'ballad';
+        if (chordSheetTextarea) chordSheetTextarea.value = '';
+      }
+      if (generateChordSongBtn) {
+        const sp = generateChordSongBtn.querySelector('span') || generateChordSongBtn;
+        sp.textContent = 'Generate & Play';
+      }
+    }
+
+    refreshChordPreview();
+    setChordSheetModalOpen(true);
+  }
+
+  if (homeOpenChordModalBtn) {
+    homeOpenChordModalBtn.addEventListener('click', function () {
+      setAddSongModalOpen(false);
+      openChordSheetModal(null);
+    });
+  }
+  if (closeChordSheetModalBtn) {
+    closeChordSheetModalBtn.addEventListener('click', function () {
+      setChordSheetModalOpen(false);
+    });
+  }
+  if (cancelChordSheetBtn) {
+    cancelChordSheetBtn.addEventListener('click', function () {
+      setChordSheetModalOpen(false);
+    });
+  }
+  if (chordSheetModal) {
+    chordSheetModal.addEventListener('click', function (e) {
+      if (e.target === chordSheetModal) {
+        setChordSheetModalOpen(false);
+      }
+    });
+  }
+  if (chordLoadExampleBtn) {
+    chordLoadExampleBtn.addEventListener('click', function () {
+      if (!chordImporter || !chordSheetTextarea) return;
+      userEditedDefaultBeats = false;
+      metaAutoAppliedText = false;
+      if (chordSongTitleInput) chordSongTitleInput.value = '';
+      chordSheetTextarea.value = chordImporter.SAMPLE_CHORD_SHEET;
+      selectedChordEventIdx = -1;
+      refreshChordPreview();
+    });
+  }
+  if (chordBeatsPerBarSelect) {
+    chordBeatsPerBarSelect.addEventListener('change', function () {
+      if (!userEditedDefaultBeats && chordDefaultBeatsSelect) {
+        chordDefaultBeatsSelect.value = chordBeatsPerBarSelect.value;
+      }
+      refreshChordPreview();
+    });
+  }
+  if (chordDefaultBeatsSelect) {
+    chordDefaultBeatsSelect.addEventListener('change', function () {
+      userEditedDefaultBeats = true;
+      refreshChordPreview();
+    });
+  }
+  if (chordBpmInput) chordBpmInput.addEventListener('input', refreshChordPreview);
+  if (chordCapoSelect) chordCapoSelect.addEventListener('change', refreshChordPreview);
+  if (chordPatternSelect) chordPatternSelect.addEventListener('change', refreshChordPreview);
+  if (chordSheetTextarea) {
+    chordSheetTextarea.addEventListener('input', function () {
+      if (!chordSheetTextarea.value.trim()) {
+        metaAutoAppliedText = false;
+      }
+      refreshChordPreview();
+    });
+  }
+
+  document.querySelectorAll('.chord-nudge-btn').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      if (!chordImporter || !chordSheetTextarea || !lastParsedChordSheet) return;
+      const ev = lastParsedChordSheet.events[selectedChordEventIdx];
+      if (!ev) return;
+      const mode = btn.getAttribute('data-mode');
+      const val = parseFloat(btn.getAttribute('data-val')) || 1;
+      const bpb = lastParsedChordSheet.beatsPerBar || 4;
+
+      let nextBeats = ev.durationBeats;
+      if (mode === 'delta') {
+        nextBeats = Math.max(0.5, Math.min(32, Math.round((ev.durationBeats + val) * 4) / 4));
+      } else if (mode === 'bars') {
+        nextBeats = Math.max(0.5, Math.min(32, Math.round((val * bpb) * 4) / 4));
+      } else {
+        nextBeats = Math.max(0.5, Math.min(32, val));
+      }
+
+      chordSheetTextarea.value = chordImporter.updateChordDurationInText(chordSheetTextarea.value, ev, nextBeats, bpb);
+      refreshChordPreview();
+    });
+  });
+
+  if (previewChordAudioBtn) {
+    previewChordAudioBtn.addEventListener('click', function () {
+      if (isPreviewingChords) {
+        stopChordAudioPreview();
+        return;
+      }
+      if (!chordImporter || !chordSheetTextarea) return;
+      try {
+        const opts = readChordImportOptions();
+        opts.existingId = '__preview__';
+        const previewSong = chordImporter.buildSongFromChordChart(chordSheetTextarea.value, opts);
+        const startOffset = previewSong.gridOffset || 1.2;
+        const previewWindowEnd = startOffset + Math.min(8.0, previewSong.duration - startOffset);
+        const previewNotes = previewSong.notes.filter(function (n) { return n.time < previewWindowEnd; });
+        if (previewNotes.length === 0) return;
+
+        isPreviewingChords = true;
+        previewChordAudioBtn.textContent = '■ Stop Preview';
+
+        for (let i = 0; i < previewNotes.length; i++) {
+          const n = previewNotes[i];
+          const delayMs = Math.max(0, Math.round((n.time - startOffset) * 1000));
+          chordPreviewTimers.push(setTimeout((function (note) {
+            return function () {
+              if (!isPreviewingChords) return;
+              audioEngine.playNote(note.midi, note.duration, note.velocity);
+            };
+          })(n), delayMs));
+        }
+
+        const totalMs = Math.round((previewWindowEnd - startOffset + 0.5) * 1000);
+        chordPreviewTimers.push(setTimeout(stopChordAudioPreview, totalMs));
+      } catch (err) {
+        stopChordAudioPreview();
+        if (chordImportError) {
+          chordImportError.style.display = 'block';
+          chordImportError.textContent = (err && err.message) ? err.message : 'Unable to preview chords.';
+        }
+      }
+    });
+  }
+
+  if (generateChordSongBtn) {
+    generateChordSongBtn.addEventListener('click', async function () {
+      if (!chordImporter || !chordSheetTextarea) return;
+      stopChordAudioPreview();
+      if (chordImportError) {
+        chordImportError.style.display = 'none';
+        chordImportError.textContent = '';
+      }
+
+      try {
+        const opts = readChordImportOptions();
+        if (editingChordSongId) {
+          opts.existingId = editingChordSongId;
+          opts.createdAt = editingChordCreatedAt;
+        }
+        const songObj = chordImporter.buildSongFromChordChart(chordSheetTextarea.value, opts);
+        SONGS[songObj.id] = songObj;
+
+        if (audioTranscriber && audioTranscriber.customSongStore) {
+          await audioTranscriber.customSongStore.saveSong(songObj);
+        }
+
+        clearChordDraftOnNew = true;
+        setChordSheetModalOpen(false);
+        renderHomeSongGrid();
+        loadSongById(songObj.id);
+        setViewMode('play');
+      } catch (err) {
+        if (chordImportError) {
+          chordImportError.style.display = 'block';
+          chordImportError.textContent = (err && err.message) ? err.message : 'Could not import chord sheet.';
         }
       }
     });
