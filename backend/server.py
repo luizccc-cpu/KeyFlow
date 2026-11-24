@@ -1,1027 +1,100 @@
 """
-KeyFlow (Piano-Flow) — Phase 3 Hybrid AI Audio-to-MIDI Backend Server
-=====================================================================
-FastAPI service providing:
-1. Multi-tier Studio Stem Separation:
-   - Tier 1: BS-RoFormer SW 6-stem (`audio-separator`) to isolate dedicated piano
-     with high fidelity from full song mixes.
-   - Tier 2: HT-Demucs 6S dedicated piano stem (`htdemucs_6s --two-stems piano`).
-   - Tier 3: HT-Demucs 4-stem accompaniment isolation (`htdemucs --two-stems other`).
-   - Tier 4: Librosa HPSS harmonic separation with soft margin fallback.
-2. Minimal Stem Preparation:
-   - Gentle ~20 Hz DC/sub-bass rumble high-pass filter + peak normalization (0.95),
-     preserving note onset transients and high harmonics intact.
-   - Configurable via `KEYFLOW_STEM_PREP` ("minimal" [default] or "legacy").
-3. Multi-engine Polyphonic Piano Transcription:
-   - Tier 1: Transkun Transformer + Semi-CRF piano transcriber.
-   - Tier 2: ByteDance `piano_transcription_inference` (High-Res Onsets & Frames + Pedal).
-   - Tier 3: Spotify `basic_pitch` (Neural polyphonic audio-to-MIDI).
-   - Tier 4: Built-in `librosa` CQT + Harmonic-Percussive Polyphonic Peak Tracker
-     (guaranteed fallback so the server always works out-of-the-box).
-4. Configurable via environment variables:
-   - `KEYFLOW_STEM_PREP`: "minimal" (default) or "legacy"
-   - `KEYFLOW_SEPARATOR_MODEL`: Model filename for BS-RoFormer (default "BS-Roformer-SW.ckpt")
-5. CORS enabled (`allow_origins=["*"]`) so iPad Safari / Standalone Web App
-   hosted on GitHub Pages can connect over local Wi-Fi (`http://<LAN-IP>:8000`)
-   or `http://localhost:8000`.
+KeyFlow (Piano-Flow) — Phase 3 Hybrid AI Audio-to-MIDI Local Backend Server
+===========================================================================
+FastAPI service delegating separation, transcription, post-filtering, and
+security guards to `backend/pipeline.py`.
 """
 
-import base64
-import importlib.metadata
-import importlib.util
-import inspect
-import io
-import os
-import re
-import shutil
-import subprocess
-import sys
 import tempfile
-import threading
-import time
-import urllib.request
-import zipfile
 from pathlib import Path
-from typing import List, Dict, Any, Optional, Tuple
+from typing import Any, Dict
 
-MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MB limit
-ALLOWED_SUFFIXES = {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac", ".webm", ".mp4"}
-
-import numpy as np
-from fastapi import FastAPI, File, Form, UploadFile, HTTPException
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response, JSONResponse
-
-# Records import failures so /health can report the real reason an engine is unavailable.
-IMPORT_ERRORS: Dict[str, str] = {}
+from fastapi.responses import JSONResponse
 
 try:
-    from audio_separator.separator import Separator
-    HAS_AUDIO_SEPARATOR = True
-except Exception as _exc:
-    HAS_AUDIO_SEPARATOR = False
-    IMPORT_ERRORS["audio_separator"] = f"{type(_exc).__name__}: {_exc}"[:500]
-
-try:
-    import torch
-    HAS_TORCH = True
-except Exception as _exc:
-    HAS_TORCH = False
-    IMPORT_ERRORS["torch"] = f"{type(_exc).__name__}: {_exc}"[:500]
-
-try:
-    import soundfile as sf
-    HAS_SOUNDFILE = True
-except Exception:
-    HAS_SOUNDFILE = False
-
-try:
-    from scipy.signal import butter, sosfiltfilt
-    HAS_SCIPY_SIGNAL = True
-except Exception:
-    HAS_SCIPY_SIGNAL = False
-
-try:
-    import librosa
-    HAS_LIBROSA = True
-except Exception:
-    HAS_LIBROSA = False
-
-try:
-    import pretty_midi
-    HAS_PRETTY_MIDI = True
-except Exception:
-    HAS_PRETTY_MIDI = False
-
-try:
-    from piano_transcription_inference import PianoTranscription, sample_rate as BD_SAMPLE_RATE
-    HAS_BYTEDANCE = True
-except Exception as _exc:
-    HAS_BYTEDANCE = False
-    BD_SAMPLE_RATE = 16000
-    IMPORT_ERRORS["piano_transcription_inference"] = f"{type(_exc).__name__}: {_exc}"[:500]
-
-for _name, _msg in IMPORT_ERRORS.items():
-    print(f"[KeyFlow Backend] Import failed for {_name}: {_msg}")
-
-
-def _installed_versions() -> Dict[str, Any]:
-    """Returns installed distribution versions (None if not installed), independent of import success."""
-    out: Dict[str, Any] = {"python": sys.version.split()[0]}
-    for dist in ("numpy", "torch", "torchaudio", "audio-separator", "onnxruntime-gpu",
-                 "onnxruntime", "transkun", "demucs", "piano_transcription_inference", "librosa", "audioread", "setuptools"):
-        try:
-            out[dist] = importlib.metadata.version(dist)
-        except Exception:
-            out[dist] = None
-    return out
-
-try:
-    from basic_pitch.inference import predict as basic_pitch_predict
-    HAS_BASIC_PITCH = True
+    from pipeline import (
+        ALLOWED_SUFFIXES,
+        HAS_AUDIO_SEPARATOR,
+        HAS_BASIC_PITCH,
+        HAS_BYTEDANCE,
+        HAS_DEMUCS,
+        HAS_LIBROSA,
+        HAS_PRETTY_MIDI,
+        HAS_TRANSKUN,
+        MAX_UPLOAD_BYTES,
+        TranscriptionGuard,
+        _legacy_clean_isolated_piano_audio,
+        add_cors_and_pna_middleware,
+        build_health_payload,
+        estimate_midi_and_audio_rhythm,
+        filter_midi_bleed_notes,
+        get_available_engines,
+        isolate_piano_stem,
+        isolate_piano_with_demucs,
+        isolate_piano_with_htdemucs_6s,
+        isolate_piano_with_roformer,
+        notes_to_midi_bytes,
+        prepare_stem_for_transcription,
+        run_transcription_pipeline,
+        save_upload_to_path,
+        transcribe_with_basic_pitch,
+        transcribe_with_bytedance,
+        transcribe_with_librosa_cqt,
+        transcribe_with_transkun,
+    )
 except ImportError:
-    HAS_BASIC_PITCH = False
-
-HAS_DEMUCS = shutil.which("demucs") is not None
-
-# Runner snippet that shims pkg_resources.resource_filename if setuptools>=82 is installed
-# (which removed pkg_resources, breaking transkun/transcribe.py line 22).
-_TRANSKUN_RUNNER_CODE = (
-    "import sys, types, importlib.util, pathlib\n"
-    "try:\n"
-    "    import pkg_resources\n"
-    "except ImportError:\n"
-    "    m = types.ModuleType('pkg_resources')\n"
-    "    m.resource_filename = lambda pkg, res: str(pathlib.Path(importlib.util.find_spec(pkg).origin).parent / res)\n"
-    "    sys.modules['pkg_resources'] = m\n"
-    "from transkun.transcribe import main\n"
-    "sys.exit(main())\n"
-)
-
-HAS_TRANSKUN = False
-TRANSKUN_CMD: List[str] = []
-
-try:
-    if importlib.util.find_spec("transkun") is not None:
-        HAS_TRANSKUN = True
-        TRANSKUN_CMD = [sys.executable, "-c", _TRANSKUN_RUNNER_CODE]
-except Exception:
-    pass
-
-if not HAS_TRANSKUN and shutil.which("transkun") is not None:
-    HAS_TRANSKUN = True
-    TRANSKUN_CMD = ["transkun"]
-
-# BS-RoFormer SW 6-stem model (BS-Roformer-SW.ckpt with BS-Roformer-SW.yaml), extracting ['bass', 'drums', 'other', 'vocals', 'guitar', 'piano']
-PIANO_SEPARATOR_MODEL = os.environ.get("KEYFLOW_SEPARATOR_MODEL", "BS-Roformer-SW.ckpt")
-STEM_PREP_MODE = os.environ.get("KEYFLOW_STEM_PREP", "minimal")
-SEPARATOR_OVERLAP = os.environ.get("KEYFLOW_SEPARATOR_OVERLAP", "")
-
-
-def _get_separator_mdxc_params() -> Optional[Dict[str, Any]]:
-    """
-    Inspects Separator.__init__ signature and returns merged mdxc_params if KEYFLOW_SEPARATOR_OVERLAP
-    is a valid integer >= 1. Otherwise returns None so library default applies.
-    """
-    if not SEPARATOR_OVERLAP:
-        return None
-    try:
-        overlap_val = int(SEPARATOR_OVERLAP)
-        if overlap_val < 1:
-            return None
-    except ValueError:
-        return None
-
-    try:
-        if not HAS_AUDIO_SEPARATOR:
-            return None
-        sig = inspect.signature(Separator.__init__)
-        if "mdxc_params" not in sig.parameters:
-            print("[KeyFlow Backend] WARNING: 'mdxc_params' parameter not found in Separator.__init__ signature, skipping overlap override.")
-            return None
-        default_val = sig.parameters["mdxc_params"].default
-        if isinstance(default_val, dict):
-            params = dict(default_val)
-        else:
-            params = {}
-        params["overlap"] = overlap_val
-        return params
-    except Exception as exc:
-        print(f"[KeyFlow Backend] WARNING: Failed to inspect Separator.__init__ signature ({exc}), skipping overlap override.")
-        return None
-
-MODEL_CACHE_DIR = Path(tempfile.gettempdir()) / "audio-separator-models"
-_separator_lock = threading.Lock()
-_cached_separator = None
-
-BYTEDANCE_CHECKPOINT_URL = (
-    "https://zenodo.org/record/4034264/files/"
-    "CRNN_note_F1%3D0.9677_pedal_F1%3D0.9186.pth?download=1"
-)
-BYTEDANCE_CHECKPOINT_PATH = Path(tempfile.gettempdir()) / "piano_model.pth"
-_checkpoint_lock = threading.Lock()
-
-
-def ensure_bytedance_checkpoint() -> Path:
-    """Thread-safely downloads the ByteDance Piano Transcription model weights to tempdir on first use."""
-    if BYTEDANCE_CHECKPOINT_PATH.exists() and BYTEDANCE_CHECKPOINT_PATH.stat().st_size > 10_000_000:
-        return BYTEDANCE_CHECKPOINT_PATH
-
-    with _checkpoint_lock:
-        if BYTEDANCE_CHECKPOINT_PATH.exists() and BYTEDANCE_CHECKPOINT_PATH.stat().st_size > 10_000_000:
-            return BYTEDANCE_CHECKPOINT_PATH
-
-        tmp_download = BYTEDANCE_CHECKPOINT_PATH.with_suffix(f".part_{os.getpid()}_{threading.get_ident()}")
-        try:
-            urllib.request.urlretrieve(BYTEDANCE_CHECKPOINT_URL, str(tmp_download))
-            tmp_download.replace(BYTEDANCE_CHECKPOINT_PATH)
-        finally:
-            if tmp_download.exists():
-                try:
-                    tmp_download.unlink()
-                except Exception:
-                    pass
-        return BYTEDANCE_CHECKPOINT_PATH
-
+    from backend.pipeline import (
+        ALLOWED_SUFFIXES,
+        HAS_AUDIO_SEPARATOR,
+        HAS_BASIC_PITCH,
+        HAS_BYTEDANCE,
+        HAS_DEMUCS,
+        HAS_LIBROSA,
+        HAS_PRETTY_MIDI,
+        HAS_TRANSKUN,
+        MAX_UPLOAD_BYTES,
+        TranscriptionGuard,
+        _legacy_clean_isolated_piano_audio,
+        add_cors_and_pna_middleware,
+        build_health_payload,
+        estimate_midi_and_audio_rhythm,
+        filter_midi_bleed_notes,
+        get_available_engines,
+        isolate_piano_stem,
+        isolate_piano_with_demucs,
+        isolate_piano_with_htdemucs_6s,
+        isolate_piano_with_roformer,
+        notes_to_midi_bytes,
+        prepare_stem_for_transcription,
+        run_transcription_pipeline,
+        save_upload_to_path,
+        transcribe_with_basic_pitch,
+        transcribe_with_bytedance,
+        transcribe_with_librosa_cqt,
+        transcribe_with_transkun,
+    )
 
 app = FastAPI(
     title="KeyFlow AI Audio-to-MIDI Transcription Server",
-    version="3.1.0",
+    version="3.2.0",
     description="BS-RoFormer / HT-Demucs stem isolation + Multi-engine Piano Transcription for KeyFlow Virtual Piano",
 )
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-
-def get_available_engines() -> List[str]:
-    engines = []
-    if HAS_AUDIO_SEPARATOR:
-        engines.append("BS-RoFormer")
-    if HAS_DEMUCS:
-        engines.append("HT-Demucs-6S")
-    if HAS_TRANSKUN:
-        engines.append("Transkun")
-    if HAS_BYTEDANCE:
-        engines.append("ByteDance-Piano")
-    if HAS_BASIC_PITCH:
-        engines.append("Basic-Pitch")
-    if HAS_LIBROSA:
-        engines.append("Librosa-CQT")
-    return engines
+add_cors_and_pna_middleware(app)
+transcription_guard = TranscriptionGuard()
 
 
 @app.get("/health")
 @app.get("/api/health")
 async def health_check() -> Dict[str, Any]:
-    as_ver = None
-    if HAS_AUDIO_SEPARATOR:
-        try:
-            as_ver = importlib.metadata.version("audio-separator")
-        except Exception:
-            try:
-                as_ver = importlib.metadata.version("audio_separator")
-            except Exception:
-                as_ver = "installed"
-
-    return {
-        "status": "ok",
-        "version": "3.1.0",
-        "engines": get_available_engines(),
-        "audio_separator_available": HAS_AUDIO_SEPARATOR,
-        "audio_separator_version": as_ver,
-        "demucs_available": HAS_DEMUCS,
-        "transkun_available": HAS_TRANSKUN,
-        "bytedance_available": HAS_BYTEDANCE,
-        "basic_pitch_available": HAS_BASIC_PITCH,
-        "librosa_available": HAS_LIBROSA,
-        "import_errors": IMPORT_ERRORS,
-        "installed_versions": _installed_versions(),
-    }
-
-
-def _legacy_clean_isolated_piano_audio(stem_wav_path: Path, work_dir: Path) -> Path:
-    """
-    Legacy post-Demucs harmonic and piano-range filtering:
-    1. Loads audio at ByteDance sample rate (16 kHz mono).
-    2. Strips residual drum/percussive transients via HPSS (margin 1.0 harm vs 2.2 perc).
-    3. Bandpasses to piano fundamental range (27.5 Hz A0 to 4400 Hz C8).
-    4. Normalizes peak amplitude and saves to piano_cleaned.wav.
-    """
-    if not HAS_LIBROSA:
-        return stem_wav_path
-
-    try:
-        y, sr = librosa.load(str(stem_wav_path), sr=BD_SAMPLE_RATE, mono=True)
-        if y.size == 0 or np.max(np.abs(y)) < 1e-6:
-            return stem_wav_path
-
-        # 1. HPSS to strip percussive bleed from drums/cymbals
-        y_harm, _ = librosa.effects.hpss(y, margin=(1.0, 2.2))
-
-        # 2. Bandpass filter for piano fundamental range (27.5 Hz - 4400 Hz)
-        y_filtered = y_harm
-        if HAS_SCIPY_SIGNAL and sr > 8800:
-            try:
-                nyq = 0.5 * sr
-                low = 27.5 / nyq
-                high = min(4400.0, nyq - 50.0) / nyq
-                sos = butter(2, [low, high], btype="bandpass", output="sos")
-                y_filtered = sosfiltfilt(sos, y_harm)
-            except Exception as f_err:
-                print(f"[KeyFlow Backend] Bandpass filter skipped: {f_err}")
-                y_filtered = y_harm
-
-        # 3. Peak amplitude normalization
-        peak = float(np.max(np.abs(y_filtered)))
-        if peak > 1e-6:
-            y_norm = y_filtered * (0.95 / peak)
-        else:
-            y_norm = y_filtered
-
-        cleaned_path = work_dir / "piano_cleaned.wav"
-        if HAS_SOUNDFILE:
-            sf.write(str(cleaned_path), y_norm.astype(np.float32), sr)
-            if cleaned_path.exists() and cleaned_path.stat().st_size > 1000:
-                return cleaned_path
-    except Exception as exc:
-        print(f"[KeyFlow Backend] Post-Demucs cleaning error: {exc}")
-
-    return stem_wav_path
-
-
-def prepare_stem_for_transcription(stem_path: Path, work_dir: Path, mode: str | None = None) -> Path:
-    """
-    Prepares an isolated piano stem for neural transcription:
-    - Minimal mode (default):
-      1. Loads audio preserving native sample rate (sr=None, mono=True).
-      2. Applies a gentle 20 Hz high-pass filter (2nd order Butterworth) to remove DC/rumble.
-      3. Peak-normalizes to 0.95.
-      4. Saves as piano_prepared.wav (float32).
-      No HPSS, no low-pass, no bandpass so transients and high harmonics remain intact.
-    - Legacy mode (mode="legacy" or KEYFLOW_STEM_PREP="legacy"):
-      Delegates to _legacy_clean_isolated_piano_audio.
-    """
-    current_mode = mode or STEM_PREP_MODE
-    if current_mode == "legacy":
-        return _legacy_clean_isolated_piano_audio(stem_path, work_dir)
-
-    if not HAS_LIBROSA:
-        return stem_path
-
-    try:
-        y, sr = librosa.load(str(stem_path), sr=None, mono=True)
-        if y.size == 0 or np.max(np.abs(y)) < 1e-6:
-            return stem_path
-
-        # Gentle high-pass at ~20 Hz to remove DC/sub-bass rumble
-        y_filtered = y
-        if HAS_SCIPY_SIGNAL and sr is not None and sr > 40:
-            try:
-                nyq = 0.5 * sr
-                low = 20.0 / nyq
-                if 0 < low < 1:
-                    sos = butter(2, low, btype="highpass", output="sos")
-                    y_filtered = sosfiltfilt(sos, y)
-            except Exception as f_err:
-                print(f"[KeyFlow Backend] Highpass filter skipped: {f_err}")
-                y_filtered = y
-
-        # Peak normalization to 0.95
-        peak = float(np.max(np.abs(y_filtered)))
-        if peak > 1e-6:
-            y_norm = y_filtered * (0.95 / peak)
-        else:
-            y_norm = y_filtered
-
-        prepared_path = work_dir / "piano_prepared.wav"
-        if HAS_SOUNDFILE:
-            sf.write(str(prepared_path), y_norm.astype(np.float32), sr)
-            if prepared_path.exists() and prepared_path.stat().st_size > 1000:
-                return prepared_path
-    except Exception as exc:
-        print(f"[KeyFlow Backend] Stem preparation error: {exc}")
-
-    return stem_path
-
-
-def isolate_piano_with_roformer(input_audio_path: Path, work_dir: Path) -> Path | None:
-    """Isolates dedicated piano stem using BS-RoFormer 6-stem model via audio-separator."""
-    global _cached_separator
-    if not HAS_AUDIO_SEPARATOR:
-        return None
-
-    sep_out = work_dir / "sep_out"
-    sep_out.mkdir(parents=True, exist_ok=True)
-    MODEL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-
-    with _separator_lock:
-        try:
-            if _cached_separator is None:
-                sep_kwargs: Dict[str, Any] = {
-                    "output_dir": str(sep_out),
-                    "model_file_dir": str(MODEL_CACHE_DIR),
-                    "output_format": "WAV",
-                }
-                mdxc_ov = _get_separator_mdxc_params()
-                if mdxc_ov is not None:
-                    sep_kwargs["mdxc_params"] = mdxc_ov
-
-                sep = Separator(**sep_kwargs)
-                try:
-                    sep.load_model(model_filename=PIANO_SEPARATOR_MODEL)
-                except Exception as lm_exc:
-                    if "not found in supported model files" in str(lm_exc).lower():
-                        try:
-                            as_ver = importlib.metadata.version("audio-separator")
-                        except Exception:
-                            as_ver = "unknown"
-                        print(f"[KeyFlow Backend] ERROR: separator model '{PIANO_SEPARATOR_MODEL}' not available in audio-separator {as_ver} — upgrade to >=0.48.0. Falling back to htdemucs_6s.")
-                        _cached_separator = None
-                        return None
-                    raise
-                _cached_separator = sep
-
-            separator = _cached_separator
-
-            # Update output_dir on both separator and model_instance before separate()
-            separator.output_dir = str(sep_out)
-            mi = getattr(separator, "model_instance", None)
-            if mi is not None and hasattr(mi, "output_dir"):
-                mi.output_dir = str(sep_out)
-
-            output_files = separator.separate(str(input_audio_path))
-            if not output_files:
-                return None
-
-            # Resolve filenames: absolute -> sep_out / name -> Path(separator.output_dir) / name
-            for fname in output_files:
-                candidate = Path(fname)
-                resolved_path = None
-                if candidate.is_absolute() and candidate.exists():
-                    resolved_path = candidate
-                elif (sep_out / fname).exists():
-                    resolved_path = sep_out / fname
-                elif (Path(separator.output_dir) / fname).exists():
-                    resolved_path = Path(separator.output_dir) / fname
-
-                if resolved_path and "piano" in resolved_path.name.lower() and resolved_path.stat().st_size > 1000:
-                    return resolved_path
-        except Exception as exc:
-            print(f"[KeyFlow Backend] BS-RoFormer isolation error: {exc}")
-            _cached_separator = None
-            return None
-        finally:
-            if HAS_TORCH and torch.cuda.is_available():
-                try:
-                    torch.cuda.empty_cache()
-                except Exception:
-                    pass
-    return None
-
-
-def isolate_piano_with_htdemucs_6s(input_audio_path: Path, work_dir: Path) -> Path | None:
-    """Runs 6-stem HT-Demucs dedicated piano stem isolation."""
-    if not HAS_DEMUCS:
-        return None
-    device = "cuda" if (HAS_TORCH and torch.cuda.is_available()) else "cpu"
-    out_dir = work_dir / "demucs_out"
-    try:
-        cmd_6s = [
-            "demucs",
-            "-n", "htdemucs_6s",
-            "--two-stems", "piano",
-            "-d", device,
-            "-o", str(out_dir),
-            str(input_audio_path),
-        ]
-        subprocess.run(
-            cmd_6s,
-            check=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=300,
-        )
-        piano_wav = out_dir / "htdemucs_6s" / input_audio_path.stem / "piano.wav"
-        if piano_wav.exists() and piano_wav.stat().st_size > 1000:
-            return piano_wav
-    except Exception as exc:
-        print(f"[KeyFlow Backend] htdemucs_6s dedicated piano isolation fallback: {exc}")
-    finally:
-        if HAS_TORCH and torch.cuda.is_available():
-            try:
-                torch.cuda.empty_cache()
-            except Exception:
-                pass
-    return None
-
-
-def isolate_piano_stem(input_audio_path: Path, work_dir: Path) -> Tuple[Path, str]:
-    """
-    Separates piano stem using hierarchical fallback chain:
-    1. BS-RoFormer SW 6-stem via audio-separator.
-    2. HT-Demucs 6S dedicated piano stem (demucs -n htdemucs_6s --two-stems piano).
-    3. HT-Demucs 4-stem other stem (demucs -n htdemucs --two-stems other).
-    4. Librosa HPSS harmonic separation with softer margin=(1.0, 1.5).
-    5. Raw input audio fallback.
-
-    Returns (prepared_stem_path, separator_name).
-    """
-    # 1. Primary: BS-RoFormer via audio-separator
-    if HAS_AUDIO_SEPARATOR:
-        try:
-            roformer_stem = isolate_piano_with_roformer(input_audio_path, work_dir)
-            if roformer_stem is not None and roformer_stem.exists():
-                return prepare_stem_for_transcription(roformer_stem, work_dir), "bs-roformer-sw"
-        except Exception as exc:
-            print(f"[KeyFlow Backend] BS-RoFormer fallback: {exc}")
-
-    # 2. Secondary: 6-stem dedicated piano model (htdemucs_6s --two-stems piano)
-    if HAS_DEMUCS:
-        piano_6s = isolate_piano_with_htdemucs_6s(input_audio_path, work_dir)
-        if piano_6s is not None and piano_6s.exists():
-            return prepare_stem_for_transcription(piano_6s, work_dir), "htdemucs_6s"
-
-        # 3. Tertiary: 4-stem model (htdemucs --two-stems other)
-        device = "cuda" if (HAS_TORCH and torch.cuda.is_available()) else "cpu"
-        out_dir = work_dir / "demucs_out"
-        try:
-            cmd_4s = [
-                "demucs",
-                "-n", "htdemucs",
-                "--two-stems", "other",
-                "-d", device,
-                "-o", str(out_dir),
-                str(input_audio_path),
-            ]
-            subprocess.run(
-                cmd_4s,
-                check=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                timeout=240,
-            )
-            other_wav = out_dir / "htdemucs" / input_audio_path.stem / "other.wav"
-            if other_wav.exists() and other_wav.stat().st_size > 1000:
-                return prepare_stem_for_transcription(other_wav, work_dir), "htdemucs"
-        except Exception as exc:
-            print(f"[KeyFlow Backend] Demucs 4-stem fallback failed: {exc}")
-        finally:
-            if HAS_TORCH and torch.cuda.is_available():
-                try:
-                    torch.cuda.empty_cache()
-                except Exception:
-                    pass
-
-    # 4. Quaternary: Librosa HPSS crude harmonic separation (softer margin)
-    if HAS_LIBROSA:
-        try:
-            y, sr = librosa.load(str(input_audio_path), sr=22050, mono=True)
-            y_harm, _ = librosa.effects.hpss(y, margin=(1.0, 1.5))
-            harm_path = work_dir / "harmonic_isolated.wav"
-            if HAS_SOUNDFILE:
-                sf.write(str(harm_path), y_harm, sr)
-            if harm_path.exists() and harm_path.stat().st_size > 1000:
-                return prepare_stem_for_transcription(harm_path, work_dir), "librosa-hpss"
-        except Exception as exc:
-            print(f"[KeyFlow Backend] Librosa HPSS fallback skipped: {exc}")
-
-    return prepare_stem_for_transcription(input_audio_path, work_dir), "none"
-
-
-# Backward compatibility alias
-isolate_piano_with_demucs = isolate_piano_stem
-
-
-def transcribe_with_transkun(audio_path: Path, output_midi_path: Path) -> bool:
-    """Transcribes audio into a Standard MIDI file using Transkun."""
-    if not HAS_TRANSKUN or not TRANSKUN_CMD:
-        return False
-    try:
-        device = "cuda" if (HAS_TORCH and torch.cuda.is_available()) else "cpu"
-        cmd = list(TRANSKUN_CMD) + [str(audio_path), str(output_midi_path), "--device", device]
-        subprocess.run(
-            cmd,
-            check=True,
-            capture_output=True,
-            timeout=300,
-        )
-        return output_midi_path.exists() and output_midi_path.stat().st_size > 80
-    except subprocess.CalledProcessError as exc:
-        err_msg = (exc.stderr.decode("utf-8", errors="replace") if exc.stderr else str(exc))[-1000:]
-        print(f"[KeyFlow Backend] Transkun transcription failed: {err_msg}")
-        return False
-    except Exception as exc:
-        print(f"[KeyFlow Backend] Transkun transcription error: {str(exc)[:500]}")
-        return False
-    finally:
-        if HAS_TORCH and torch.cuda.is_available():
-            try:
-                torch.cuda.empty_cache()
-            except Exception:
-                pass
-
-
-def transcribe_with_bytedance(audio_path: Path, output_midi_path: Path) -> bool:
-    if not HAS_BYTEDANCE or not HAS_LIBROSA:
-        return False
-    try:
-        ckpt_path = ensure_bytedance_checkpoint()
-        audio, _ = librosa.load(str(audio_path), sr=BD_SAMPLE_RATE, mono=True)
-        device = "cuda" if (HAS_TORCH and torch.cuda.is_available()) else "cpu"
-        transcriber = PianoTranscription(device=device, checkpoint_path=str(ckpt_path))
-        transcriber.transcribe(audio, str(output_midi_path))
-        return output_midi_path.exists() and output_midi_path.stat().st_size > 80
-    except Exception as exc:
-        print(f"[KeyFlow Backend] ByteDance transcription failed: {exc}")
-        return False
-    finally:
-        if HAS_TORCH and torch.cuda.is_available():
-            try:
-                torch.cuda.empty_cache()
-            except Exception:
-                pass
-
-
-def transcribe_with_basic_pitch(audio_path: Path, output_midi_path: Path, sensitivity: float) -> bool:
-    if not HAS_BASIC_PITCH:
-        return False
-    try:
-        sens_norm = float(np.clip(sensitivity / 100.0 if sensitivity > 1.0 else sensitivity, 0.15, 0.90))
-        onset_thresh = float(np.clip(0.65 - sens_norm * 0.35, 0.25, 0.70))
-        frame_thresh = float(np.clip(0.45 - sens_norm * 0.22, 0.18, 0.55))
-        _, midi_data, _ = basic_pitch_predict(
-            str(audio_path),
-            onset_threshold=onset_thresh,
-            frame_threshold=frame_thresh,
-            minimum_note_length=55.0,
-            minimum_frequency=librosa.midi_to_hz(28) if HAS_LIBROSA else 41.2,
-            maximum_frequency=librosa.midi_to_hz(96) if HAS_LIBROSA else 2093.0,
-        )
-        midi_data.write(str(output_midi_path))
-        return output_midi_path.exists()
-    except Exception as exc:
-        print(f"[KeyFlow Backend] Basic Pitch transcription failed: {exc}")
-        return False
-
-
-def filter_midi_bleed_notes(
-    midi_path: Path,
-    sensitivity: float = 55.0,
-    transcriber: str = "bytedance",
-) -> bool:
-    """
-    Post-filters low-velocity bleed and micro-glitches from neural transcription:
-    1. Removes notes outside 88-key piano range (MIDI 21..108).
-    2. Velocity gate mapped from sensitivity:
-       - ByteDance: 15..85 -> min_vel 38..20 (default 55 -> 28).
-       - Transkun: 15..85 -> min_vel 24..10 (default 55 -> 16), overridable via KEYFLOW_TRANSKUN_MIN_VEL.
-    3. Removes sub-55ms micro-glitches (duration < 0.055s).
-    4. Caps simultaneous note onsets within any 30ms window to 8 notes (keeping highest velocity).
-    """
-    if not HAS_PRETTY_MIDI or not midi_path.exists():
-        return False
-    try:
-        pm = pretty_midi.PrettyMIDI(str(midi_path))
-        sens_clamped = float(np.clip(sensitivity, 15.0, 85.0))
-        t_name = (transcriber or "bytedance").strip().lower()
-
-        if t_name == "transkun":
-            min_vel = int(round(24.0 - ((sens_clamped - 15.0) / 70.0) * 14.0))
-            min_vel = max(1, min(45, min_vel))
-            env_override = os.environ.get("KEYFLOW_TRANSKUN_MIN_VEL", "").strip()
-            if env_override:
-                try:
-                    min_vel = int(env_override)
-                except ValueError:
-                    pass
-        else:
-            min_vel = int(round(38.0 - ((sens_clamped - 15.0) / 70.0) * 18.0))
-            min_vel = max(15, min(45, min_vel))
-
-        total_kept = 0
-        for inst in pm.instruments:
-            if inst.is_drum:
-                continue
-
-            # Step 1: Filter pitch range, minimum velocity, and minimum duration
-            valid_notes = []
-            for n in inst.notes:
-                dur = n.end - n.start
-                if 21 <= n.pitch <= 108 and n.velocity >= min_vel and dur >= 0.055:
-                    valid_notes.append(n)
-
-            valid_notes.sort(key=lambda n: n.start)
-
-            # Step 2: Cap simultaneous note onsets within 30ms window to 8 notes
-            filtered_notes = []
-            i = 0
-            while i < len(valid_notes):
-                w_start = valid_notes[i].start
-                w_notes = []
-                while i < len(valid_notes) and (valid_notes[i].start - w_start) <= 0.030:
-                    w_notes.append(valid_notes[i])
-                    i += 1
-                if len(w_notes) > 8:
-                    w_notes.sort(key=lambda n: n.velocity, reverse=True)
-                    w_notes = w_notes[:8]
-                filtered_notes.extend(w_notes)
-
-            filtered_notes.sort(key=lambda n: (n.start, n.pitch))
-
-            # Step 3: Bake CC 64 sustain pedal holds into note end times
-            cc64_events = sorted(
-                [cc for cc in inst.control_changes if cc.number == 64],
-                key=lambda cc: cc.time,
-            )
-            pedal_intervals: List[Tuple[float, float]] = []
-            p_start: Optional[float] = None
-            for cc in cc64_events:
-                if cc.value >= 64 and p_start is None:
-                    p_start = float(cc.time)
-                elif cc.value < 64 and p_start is not None:
-                    if float(cc.time) > p_start:
-                        pedal_intervals.append((p_start, float(cc.time)))
-                    p_start = None
-
-            # Map next onset of the same pitch so sustained notes never overlap a re-strike
-            next_same_pitch: List[float] = [1e9] * len(filtered_notes)
-            last_seen_pitch: Dict[int, float] = {}
-            for idx_n in range(len(filtered_notes) - 1, -1, -1):
-                p_val = filtered_notes[idx_n].pitch
-                if p_val in last_seen_pitch:
-                    next_same_pitch[idx_n] = last_seen_pitch[p_val]
-                last_seen_pitch[p_val] = float(filtered_notes[idx_n].start)
-
-            if pedal_intervals:
-                for idx_n, n in enumerate(filtered_notes):
-                    for p_down, p_up in pedal_intervals:
-                        if p_down <= n.end + 0.04 and p_up > n.end:
-                            capped_end = min(p_up - 0.02, next_same_pitch[idx_n] - 0.03)
-                            if capped_end > n.end:
-                                n.end = capped_end
-                            break
-
-            # Step 4: Extend clipped chord clusters (2+ notes within 45ms) up to next chord change
-            clusters_idx: List[List[int]] = []
-            if filtered_notes:
-                cur_c = [0]
-                for idx_n in range(1, len(filtered_notes)):
-                    if (filtered_notes[idx_n].start - filtered_notes[cur_c[0]].start) <= 0.045:
-                        cur_c.append(idx_n)
-                    else:
-                        clusters_idx.append(cur_c)
-                        cur_c = [idx_n]
-                clusters_idx.append(cur_c)
-
-            for c_pos in range(len(clusters_idx) - 1):
-                c_list = clusters_idx[c_pos]
-                c_start = float(filtered_notes[c_list[0]].start)
-                if len(c_list) >= 2:
-                    target_next_t: Optional[float] = None
-                    for next_c_pos in range(c_pos + 1, len(clusters_idx)):
-                        cand_t = float(filtered_notes[clusters_idx[next_c_pos][0]].start)
-                        dt = cand_t - c_start
-                        if dt < 0.22:
-                            continue
-                        if len(clusters_idx[next_c_pos]) >= 2 or dt >= 0.28:
-                            target_next_t = cand_t
-                            break
-                    if target_next_t is not None and 0.25 <= (target_next_t - c_start) <= 2.6:
-                        for idx_n in c_list:
-                            n = filtered_notes[idx_n]
-                            dur = n.end - n.start
-                            max_end = min(target_next_t - 0.04, next_same_pitch[idx_n] - 0.03)
-                            if dur <= 1.25 and (max_end - n.start) > dur + 0.05:
-                                n.end = min(n.start + 3.5, max_end)
-
-            inst.notes = filtered_notes
-            total_kept += len(filtered_notes)
-
-        if total_kept > 0:
-            pm.write(str(midi_path))
-            return True
-        return False
-    except Exception as exc:
-        print(f"[KeyFlow Filter] Error filtering MIDI bleed notes: {exc}")
-        return False
-
-
-def estimate_midi_and_audio_rhythm(
-    audio_path: Path,
-    midi_path: Path,
-) -> Dict[str, float]:
-    """
-    Estimates musical tempo (BPM) and Bar 1 beat grid offset (including the frontend's +0.8s lead-in)
-    by combining librosa beat tracking on the audio with phase-alignment against transcribed MIDI note onsets.
-    """
-    default_res = {"bpm": 120.0, "grid_offset": 0.8}
-    if not HAS_PRETTY_MIDI or not midi_path.exists():
-        return default_res
-
-    try:
-        pm = pretty_midi.PrettyMIDI(str(midi_path))
-        raw_notes = []
-        for inst in pm.instruments:
-            if not inst.is_drum:
-                raw_notes.extend(inst.notes)
-        if not raw_notes:
-            return default_res
-
-        raw_notes.sort(key=lambda n: (n.start, n.pitch))
-
-        # Cluster simultaneous note onsets within 35ms
-        clusters: List[Tuple[float, float]] = []
-        idx = 0
-        n_total = len(raw_notes)
-        while idx < n_total:
-            t0 = float(raw_notes[idx].start)
-            w_sum = 0.0
-            while idx < n_total and (float(raw_notes[idx].start) - t0) <= 0.035:
-                dur = max(0.05, min(2.0, float(raw_notes[idx].end - raw_notes[idx].start)))
-                w_sum += float(raw_notes[idx].velocity) * (0.5 + 0.5 * dur)
-                idx += 1
-            clusters.append((t0, w_sum))
-
-        # 1. Estimate BPM via librosa beat_track on first 90s of audio
-        est_bpm = 0.0
-        if HAS_LIBROSA and audio_path.exists():
-            try:
-                y, sr = librosa.load(str(audio_path), sr=22050, mono=True, duration=90.0)
-                if y.size > sr * 2:
-                    tempo_val, _ = librosa.beat.beat_track(y=y, sr=sr)
-                    arr = np.asarray(tempo_val).flat
-                    if arr.size > 0:
-                        est_bpm = float(arr[0])
-            except Exception:
-                est_bpm = 0.0
-
-        # 2. Fallback BPM from MIDI inter-onset intervals if librosa beat_track failed
-        if est_bpm <= 30.0 and len(clusters) >= 6:
-            iois = []
-            for i in range(1, len(clusters)):
-                dt = clusters[i][0] - clusters[i - 1][0]
-                if 0.18 <= dt <= 1.5:
-                    iois.append(dt)
-            if iois:
-                med_ioi = float(np.median(iois))
-                if med_ioi > 0:
-                    est_bpm = 60.0 / med_ioi
-
-        if est_bpm <= 30.0 or not np.isfinite(est_bpm):
-            est_bpm = 120.0
-
-        # Fold half/double tempo into natural piano practice range [64, 164]
-        while est_bpm < 64.0:
-            est_bpm *= 2.0
-        while est_bpm > 164.0:
-            est_bpm *= 0.5
-        est_bpm = float(round(np.clip(est_bpm, 48.0, 208.0)))
-
-        # 3. Find beat phase in [0, beat_sec) that best aligns with weighted MIDI note onsets
-        beat_sec = 60.0 / est_bpm
-        times = np.array([c[0] for c in clusters], dtype=np.float64)
-        weights = np.array([c[1] for c in clusters], dtype=np.float64)
-
-        angles = 2.0 * np.pi * (times / beat_sec)
-        sin_sum = float(np.sum(weights * np.sin(angles)))
-        cos_sum = float(np.sum(weights * np.cos(angles)))
-        best_phase = (np.arctan2(sin_sum, cos_sum) / (2.0 * np.pi)) * beat_sec
-        best_phase = float(best_phase % beat_sec)
-
-        # Find the first strong musical onset to anchor Bar 1 near the start of the piece
-        med_w = float(np.median(weights)) if weights.size > 0 else 0.0
-        first_strong_t = float(times[0])
-        for t_val, w_val in clusters[:12]:
-            if w_val >= med_w * 0.45:
-                first_strong_t = float(t_val)
-                break
-
-        k_steps = round((first_strong_t - best_phase) / beat_sec)
-        bar1_midi_sec = best_phase + k_steps * beat_sec
-        if bar1_midi_sec < 0.0:
-            bar1_midi_sec += beat_sec
-
-        # Frontend adds +0.8s lead-in offset to all parsed MIDI note times
-        frontend_grid_offset = round(0.8 + bar1_midi_sec, 3)
-        return {
-            "bpm": est_bpm,
-            "grid_offset": float(np.clip(frontend_grid_offset, 0.05, 10.0)),
-        }
-    except Exception as exc:
-        print(f"[KeyFlow Rhythm] Rhythm estimation fallback: {exc}")
-        return default_res
-
-
-def transcribe_with_librosa_cqt(audio_path: Path, sensitivity: float) -> Tuple[List[Dict[str, Any]], float]:
-    """
-    Polyphonic Constant-Q Transform (CQT) + Harmonic Suppression Piano Transcriber.
-    Works out-of-the-box with standard `librosa` + `numpy`.
-    """
-    if not HAS_LIBROSA:
-        raise RuntimeError("librosa is required for audio analysis.")
-
-    y, sr = librosa.load(str(audio_path), sr=22050, mono=True)
-    y_harm, _ = librosa.effects.hpss(y, margin=(1.2, 2.0))
-
-    try:
-        tempo_arr = librosa.beat.tempo(y=y_harm, sr=sr)
-        raw_bpm = float(tempo_arr[0]) if hasattr(tempo_arr, "__getitem__") and len(tempo_arr) > 0 else float(tempo_arr)
-        est_bpm = float(np.clip(raw_bpm, 60.0, 180.0))
-    except Exception:
-        est_bpm = 112.0
-
-    hop_length = 512
-    fmin = librosa.midi_to_hz(28)  # E1
-    n_bins = 69                    # MIDI 28..96 (E1..C7)
-
-    cqt_mag = np.abs(
-        librosa.cqt(
-            y_harm,
-            sr=sr,
-            hop_length=hop_length,
-            fmin=fmin,
-            n_bins=n_bins,
-            bins_per_octave=12,
-        )
-    )
-
-    # Suppress 2nd, 3rd, and 4th harmonic overtones (+12, +19, +24 semitones)
-    cleaned = cqt_mag.copy()
-    for b in range(n_bins):
-        e0 = cqt_mag[b]
-        if b + 12 < n_bins:
-            cleaned[b + 12] = np.maximum(0.0, cleaned[b + 12] - e0 * 0.45)
-        if b + 19 < n_bins:
-            cleaned[b + 19] = np.maximum(0.0, cleaned[b + 19] - e0 * 0.26)
-        if b + 24 < n_bins:
-            cleaned[b + 24] = np.maximum(0.0, cleaned[b + 24] - e0 * 0.16)
-
-    max_val = float(np.max(cleaned)) if cleaned.size > 0 else 1.0
-    if max_val <= 1e-8:
-        return [], est_bpm
-    norm = cleaned / max_val
-
-    sens_norm = float(np.clip(sensitivity / 100.0 if sensitivity > 1.0 else sensitivity, 0.15, 0.90))
-    act_thresh = 0.24 - (sens_norm - 0.5) * 0.18
-    max_poly = 5
-    frame_sec = hop_length / float(sr)
-
-    active: Dict[int, Dict[str, float]] = {}
-    notes: List[Dict[str, Any]] = []
-
-    num_frames = norm.shape[1]
-    for f_idx in range(num_frames):
-        t = f_idx * frame_sec
-        col = norm[:, f_idx]
-        peaks = []
-        for b in range(1, n_bins - 1):
-            val = float(col[b])
-            if val >= act_thresh and val >= float(col[b - 1]) * 0.94 and val >= float(col[b + 1]) * 0.94:
-                peaks.append((b + 28, val))
-        peaks.sort(key=lambda x: x[1], reverse=True)
-        chosen = dict(peaks[:max_poly])
-
-        for midi_num in list(active.keys()):
-            st = active[midi_num]
-            cur_val = chosen.get(midi_num, 0.0)
-            if cur_val < act_thresh * 0.55:
-                dur = t - st["start"]
-                if dur >= 0.065:
-                    notes.append({
-                        "midi": int(midi_num),
-                        "time": round(float(st["start"]), 4),
-                        "duration": round(float(min(4.5, dur)), 4),
-                        "velocity": round(float(np.clip(0.38 + np.sqrt(st["peak"]) * 0.56, 0.35, 0.96)), 3),
-                    })
-                del active[midi_num]
-            else:
-                if cur_val > st["peak"]:
-                    st["peak"] = cur_val
-
-        for midi_num, val in chosen.items():
-            if midi_num not in active:
-                active[midi_num] = {"start": t, "peak": val}
-
-    end_t = num_frames * frame_sec
-    for midi_num, st in active.items():
-        dur = end_t - st["start"]
-        if dur >= 0.065:
-            notes.append({
-                "midi": int(midi_num),
-                "time": round(float(st["start"]), 4),
-                "duration": round(float(min(4.5, dur)), 4),
-                "velocity": round(float(np.clip(0.38 + np.sqrt(st["peak"]) * 0.56, 0.35, 0.96)), 3),
-            })
-
-    notes.sort(key=lambda n: (n["time"], n["midi"]))
-    return notes, est_bpm
-
-
-def notes_to_midi_bytes(notes: List[Dict[str, Any]], bpm: float = 110.0) -> bytes:
-    if not HAS_PRETTY_MIDI:
-        raise RuntimeError("pretty_midi is not installed")
-    pm = pretty_midi.PrettyMIDI(initial_tempo=bpm)
-    piano = pretty_midi.Instrument(program=0, name="Piano")
-    for n in notes:
-        vel = int(np.clip(round(float(n.get("velocity", 0.78)) * 127), 28, 124))
-        start = float(n["time"])
-        end = start + max(0.06, float(n["duration"]))
-        piano.notes.append(pretty_midi.Note(velocity=vel, pitch=int(n["midi"]), start=start, end=end))
-    pm.instruments.append(piano)
-    buf = io.BytesIO()
-    pm.write(buf)
-    return buf.getvalue()
+    return build_health_payload(version="3.2.0", include_basic_pitch=True)
 
 
 @app.post("/api/transcribe")
 async def transcribe_endpoint(
+    request: Request,
     file: UploadFile = File(...),
     isolate_piano: str = Form("true"),
     sensitivity: str = Form("55"),
@@ -1030,7 +103,10 @@ async def transcribe_endpoint(
     if not file.filename:
         raise HTTPException(status_code=400, detail="Missing audio filename.")
 
-    should_isolate = str(isolate_piano).lower() in ("true", "1", "yes")
+    client_ip = request.client.host if request.client else "unknown"
+    transcription_guard.check_rate_limit(client_ip)
+
+    should_isolate = str(isolate_piano).strip().lower() in ("true", "1", "yes")
     raw_suffix = Path(file.filename).suffix.lower()
     suffix = raw_suffix if raw_suffix in ALLOWED_SUFFIXES else ".mp3"
     clean_title = Path(file.filename).stem or "Transcribed Song"
@@ -1040,110 +116,42 @@ async def transcribe_endpoint(
     except ValueError:
         sens_val = 55.0
 
-    sens_norm = float(np.clip(sens_val / 100.0 if sens_val > 1.0 else sens_val, 0.15, 0.90))
-
-    raw_bytes = await file.read(MAX_UPLOAD_BYTES + 1)
-    if not raw_bytes:
-        raise HTTPException(status_code=400, detail="Uploaded audio file is empty.")
-    if len(raw_bytes) > MAX_UPLOAD_BYTES:
-        raise HTTPException(status_code=413, detail="Audio file exceeds 50 MB limit.")
-
-    def _sync_transcribe() -> Dict[str, Any]:
+    async with transcription_guard.slot():
         with tempfile.TemporaryDirectory(prefix="keyflow_ai_") as tmp_dir:
             work_dir = Path(tmp_dir)
             input_path = work_dir / f"upload{suffix}"
-            input_path.write_bytes(raw_bytes)
+            await save_upload_to_path(file, input_path, max_bytes=MAX_UPLOAD_BYTES)
 
-            t_sep_start = time.perf_counter()
-            if should_isolate:
-                target_audio, separator_used = isolate_piano_stem(input_path, work_dir)
-            else:
-                target_audio, separator_used = input_path, "none"
-            t_sep_end = time.perf_counter()
-            sep_s = round(t_sep_end - t_sep_start, 2)
+            try:
+                result = await run_in_threadpool(
+                    run_transcription_pipeline,
+                    input_path,
+                    work_dir,
+                    should_isolate=should_isolate,
+                    sens_val=sens_val,
+                    engine=engine,
+                    cache_models=True,
+                    enable_basic_pitch=True,
+                )
+            except HTTPException:
+                raise
+            except ValueError as val_exc:
+                msg = str(val_exc)
+                if "No pitched piano notes detected" in msg:
+                    raise HTTPException(status_code=422, detail=msg)
+                print(f"[KeyFlow Backend] Validation error: {type(val_exc).__name__}: {val_exc}")
+                raise HTTPException(
+                    status_code=422,
+                    detail="Could not transcribe piano notes from this audio file.",
+                )
+            except Exception as exc:
+                print(f"[KeyFlow Backend] Transcription error: {type(exc).__name__}: {exc}")
+                raise HTTPException(
+                    status_code=422,
+                    detail="Could not transcribe piano notes from this audio file.",
+                )
 
-            output_midi = work_dir / "transcribed.mid"
-            transcriber_used = None
-            req_engine = (engine or "auto").strip().lower()
-
-            t_trans_start = time.perf_counter()
-            if req_engine == "bytedance":
-                if transcribe_with_bytedance(target_audio, output_midi):
-                    transcriber_used = "bytedance"
-                elif transcribe_with_transkun(target_audio, output_midi):
-                    transcriber_used = "transkun"
-                elif transcribe_with_basic_pitch(target_audio, output_midi, sens_norm):
-                    transcriber_used = "basic-pitch"
-            elif req_engine == "transkun":
-                if transcribe_with_transkun(target_audio, output_midi):
-                    transcriber_used = "transkun"
-                elif transcribe_with_bytedance(target_audio, output_midi):
-                    transcriber_used = "bytedance"
-                elif transcribe_with_basic_pitch(target_audio, output_midi, sens_norm):
-                    transcriber_used = "basic-pitch"
-            else:  # "auto" or unrecognized
-                if transcribe_with_transkun(target_audio, output_midi):
-                    transcriber_used = "transkun"
-                elif transcribe_with_bytedance(target_audio, output_midi):
-                    transcriber_used = "bytedance"
-                elif transcribe_with_basic_pitch(target_audio, output_midi, sens_norm):
-                    transcriber_used = "basic-pitch"
-
-            if transcriber_used is not None:
-                filter_midi_bleed_notes(output_midi, sens_val, transcriber=transcriber_used)
-                midi_bytes = output_midi.read_bytes()
-            else:
-                # 4. Fallback to Librosa CQT Polyphonic Piano Transcriber
-                notes, est_bpm = transcribe_with_librosa_cqt(target_audio, sens_norm)
-                if not notes:
-                    raise HTTPException(status_code=422, detail="No pitched piano notes detected in audio file.")
-
-                if HAS_PRETTY_MIDI:
-                    midi_bytes = notes_to_midi_bytes(notes, bpm=est_bpm)
-                    output_midi.write_bytes(midi_bytes)
-                    transcriber_used = "librosa-cqt"
-                else:
-                    t_trans_end = time.perf_counter()
-                    trans_s = round(t_trans_end - t_trans_start, 2)
-                    print(f"[KeyFlow Backend] separation={separator_used} {sep_s:.1f}s | transcription=librosa-cqt {trans_s:.1f}s")
-                    return {
-                        "title": clean_title,
-                        "bpm": round(est_bpm, 1),
-                        "notes": notes,
-                        "separator_used": separator_used,
-                        "transcriber_used": "librosa-cqt",
-                        "timings": {
-                            "separation_s": sep_s,
-                            "transcription_s": trans_s,
-                        },
-                    }
-
-            rhythm = estimate_midi_and_audio_rhythm(target_audio, output_midi)
-
-            t_trans_end = time.perf_counter()
-            trans_s = round(t_trans_end - t_trans_start, 2)
-            print(f"[KeyFlow Backend] separation={separator_used} {sep_s:.1f}s | transcription={transcriber_used} {trans_s:.1f}s")
-
-            return {
-                "midi_base64": base64.b64encode(midi_bytes).decode("ascii"),
-                "title": clean_title,
-                "separator_used": separator_used,
-                "transcriber_used": transcriber_used,
-                "bpm": rhythm["bpm"],
-                "grid_offset": rhythm["grid_offset"],
-                "timings": {
-                    "separation_s": sep_s,
-                    "transcription_s": trans_s,
-                },
-            }
-
-    try:
-        result = await run_in_threadpool(_sync_transcribe)
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
-
+    result["title"] = clean_title
     return JSONResponse(content=result)
 
 

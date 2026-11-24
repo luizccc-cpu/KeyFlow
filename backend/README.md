@@ -50,6 +50,12 @@ This Python backend powers **Studio AI Dedicated Piano Stem Separation (`BS-RoFo
 - `KEYFLOW_SEPARATOR_MODEL`: Checkpoint filename for `audio-separator` BS-RoFormer (default: `BS-Roformer-SW.ckpt`).
 - `KEYFLOW_SEPARATOR_OVERLAP`: Override the segment overlap count for MDXC/BS-RoFormer separation in `audio-separator`. Lower values are faster with slightly more seam artifacts; `2` is a reasonable speed setting (library default is typically `8`).
 - `KEYFLOW_TRANSKUN_MIN_VEL`: Optional integer override for the Transkun velocity gate threshold in `filter_midi_bleed_notes` (defaults to sensitivity-mapped range 24..10).
+- `KEYFLOW_MAX_CONCURRENT`: Maximum simultaneous `/api/transcribe` jobs (default: `2`). Excess requests wait briefly and then receive HTTP `503`.
+- `KEYFLOW_RATE_LIMIT_PER_MIN`: Per-IP sliding-window request cap for `/api/transcribe` (default: `10` requests/minute). Excess requests receive HTTP `429`.
+- `KEYFLOW_ALLOWED_ORIGINS`: Comma-separated CORS `allow_origins` list (default: `*`).
+- `KEYFLOW_DEBUG_HEALTH`: Set to `true` or `1` to include `import_errors` and `installed_versions` in `/health` responses (disabled by default).
+- `KEYFLOW_BYTEDANCE_SHA256`: Optional expected SHA-256 hex digest to verify the downloaded ByteDance CRNN checkpoint before use.
+- `KEYFLOW_CACHE_DIR`: Private directory (mode `0700`) for model and checkpoint caches (default: `<tempdir>/keyflow_cache`).
 
 ---
 
@@ -75,10 +81,9 @@ You can run the backend locally on your computer or deploy it as a free **Huggin
    ```
 
 3. **Connect from KeyFlow:**
-   - From the KeyFlow **Home Screen**, click **`+ AI Audio Song`**.
-   - If running on the same PC: keep the server URL as `http://localhost:8000`.
-   - If practicing on an **iPad over Wi-Fi**: enter your PC's local LAN IP (e.g. `http://192.168.1.50:8000`) and tap **Check**.
-   - Select an audio song and tap **Convert Audio to Piano Notes**.
+   - From the KeyFlow **Home Screen**, click **`+ Add Song`** → **`Audio Recording`**.
+   - If running on the same PC: keep the server URL as `http://localhost:8000` (when running the frontend locally over `http://`).
+   - **Important (HTTPS Mixed Content):** When using the hosted GitHub Pages frontend (`https://...`), browsers (including iPad Safari and Chrome) block `http://` LAN URLs such as `http://192.168.1.50:8000` as Mixed Content. Either expose your local server via an HTTPS tunnel/reverse proxy, use a Hugging Face Space `https://...hf.space` URL, or serve the frontend locally over `http://`.
 
 ---
 
@@ -91,27 +96,23 @@ Hugging Face provides free ZeroGPU hardware (NVIDIA RTX Pro 6000 Blackwell) usin
    - Space SDK: **Gradio**.
    - Hardware: **ZeroGPU (Free)**.
 
-2. **Upload the contents of `backend/`:**
-   - Upload `app.py`, `packages.txt`, and `requirements.txt` to the root of your Hugging Face Space repository.
-   - Hugging Face automatically installs system Debian packages (`ffmpeg`, `libsndfile1`) and starts `backend/app.py`.
+2. **Upload the backend files:**
+   - Upload `app.py`, `pipeline.py`, `packages.txt`, and `requirements.txt` from `backend/` to the root of your Hugging Face Space repository.
+   - Hugging Face automatically installs system Debian packages (`ffmpeg`, `libsndfile1`) and starts `app.py`.
 
 3. **Connect from KeyFlow:**
    - Copy your public Space URL (e.g. `https://<username>-<space-name>.hf.space`).
-   - Open KeyFlow, tap **`+ AI Audio Song`**, paste the `.hf.space` URL into the **AI Server URL** field, and tap **Check**.
+   - Open KeyFlow, tap **`+ Add Song`** → **`Audio Recording`**, expand **Advanced: Local AI Server**, paste the `.hf.space` URL into the **AI Server URL** field, and tap **Check**.
    - The server will report active engines (`BS-RoFormer`, `HT-Demucs 6S`, `Transkun`, `ByteDance Piano AI`) on ZeroGPU.
 
 ---
 
 ## API Endpoints
 
-- **`GET /health`** / **`GET /api/health`** — Returns server status, version, and available AI engines (`BS-RoFormer`, `HT-Demucs-6S`, `Transkun`, `ByteDance-Piano`, `Basic-Pitch`, `Librosa-CQT`, `Sheet-OMR`).
+- **`GET /health`** / **`GET /api/health`** — Returns server status, version, and available AI engines (`BS-RoFormer`, `HT-Demucs-6S`, `Transkun`, `ByteDance-Piano`, `Basic-Pitch`, `Librosa-CQT`). Set `KEYFLOW_DEBUG_HEALTH=true` to also expose package versions and import diagnostics.
 - **`POST /api/transcribe`** — Accepts `multipart/form-data`:
   - `file`: Audio file (`.mp3`, `.wav`, `.m4a`, `.aac`, `.ogg`, `.flac`, `.webm`, max 50 MB).
   - `isolate_piano`: `"true"` (default) to run BS-RoFormer / HT-Demucs 6S dedicated piano isolation or `"false"`.
-  - `sensitivity`: integer/float `15..85` (default `55`), normalized to `0.15..0.90`.
+  - `sensitivity`: integer/float `15..85` (default `55`).
   - `engine`: optional string `"auto"` (default), `"transkun"`, or `"bytedance"`.
-  - Returns JSON: `{"midi_base64": "...", "title": "...", "separator_used": "...", "transcriber_used": "..."}`.
-- **`POST /api/omr`** — Accepts `multipart/form-data`:
-  - `file`: Sheet music file (`.pdf`, `.png`, `.jpg`, `.jpeg`, `.webp`, `.musicxml`, `.mxl`, max 50 MB).
-  - Digital `.musicxml` / `.mxl` files are unpacked and returned as clean score XML (`{"musicxml": "...", "title": "..."}`).
-  - Visual `.pdf`, `.png`, and `.jpg` scores are rendered via `pypdfium2` and transcribed into Left/Right hand falling piano notes via morphological computer vision, returning `{ "midi_base64": "...", "title": "..." }`.
+  - Returns JSON: `{"midi_base64": "...", "title": "...", "separator_used": "...", "transcriber_used": "...", "bpm": 120.0, "grid_offset": 0.8, "timings": {...}}`.
