@@ -244,9 +244,23 @@
       return buf;
     }
 
+    updateEngineStatusText(text) {
+      try {
+        if (typeof document !== 'undefined') {
+          const el = document.getElementById('engineStatusText');
+          if (el) el.textContent = text;
+        }
+      } catch (e) {}
+    }
+
     tryLoadGrandSamplesInBackground() {
       if (this.samplesStartedLoading) return;
       this.samplesStartedLoading = true;
+
+      if (typeof fetch !== 'function' || !this.ctx) {
+        this.updateEngineStatusText('Audio: Built-In Acoustic Synth (Offline)');
+        return;
+      }
 
       const baseUrl = 'https://tonejs.github.io/audio/salamander/';
       const mapMidiToFile = {
@@ -258,20 +272,47 @@
         84: 'C6.mp3', 87: 'Ds6.mp3', 90: 'Fs6.mp3', 93: 'A6.mp3', 96: 'C7.mp3'
       };
 
-      Object.keys(mapMidiToFile).forEach((mStr) => {
-        const midi = parseInt(mStr, 10);
+      const orderedMidis = Object.keys(mapMidiToFile)
+        .map(m => parseInt(m, 10))
+        .sort((a, b) => Math.abs(a - 60) - Math.abs(b - 60));
+
+      this.updateEngineStatusText('Audio: Acoustic Synth (Loading Grand samples...)');
+
+      let nextIdx = 0;
+      let completedCount = 0;
+      const total = orderedMidis.length;
+      const onStepDone = () => {
+        completedCount++;
+        if (completedCount === total && this.samplesReadyCount === 0) {
+          this.updateEngineStatusText('Audio: Built-In Acoustic Synth (Offline)');
+        }
+        return worker();
+      };
+
+      const worker = () => {
+        if (nextIdx >= total) return Promise.resolve();
+        const midi = orderedMidis[nextIdx++];
         const url = baseUrl + mapMidiToFile[midi];
-        fetch(url)
+        return fetch(url)
           .then(r => r.ok ? r.arrayBuffer() : Promise.reject())
           .then(ab => this.ctx.decodeAudioData(ab))
           .then(audioBuf => {
             this.sampleBuffers[midi] = audioBuf;
             this.samplesReadyCount++;
+            if (this.samplesReadyCount >= 8) {
+              this.updateEngineStatusText('Audio: Salamander Grand Samples');
+            }
           })
           .catch(() => {
             // Silent fallback to built-in physical modeling acoustic engine if offline/blocked
-          });
-      });
+          })
+          .then(onStepDone, onStepDone);
+      };
+
+      const poolSize = Math.min(3, total);
+      for (let w = 0; w < poolSize; w++) {
+        worker();
+      }
     }
 
     setPreset(presetId, customWarmth) {

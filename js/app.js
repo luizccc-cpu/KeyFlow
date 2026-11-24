@@ -146,6 +146,7 @@
     state.wrongKeyFlashes = {};
     for (const k in heldKeys) delete heldKeys[k];
     for (const p in pointerMidis) delete pointerMidis[p];
+    requestRender();
   }
 
   window.addEventListener('blur', clearAllActiveInputs);
@@ -172,6 +173,29 @@
   let height = 500;
   let strikeY = 365;
   let keyboardH = 135;
+  let lastTimeMs = performance.now();
+  let rafId = null;
+  let needsRender = true;
+  let editDrag = null;
+  let lastEmptyRunwayTap = { timeMs: 0, x: 0, y: 0 };
+  let cachedGradients = null;
+
+  function needsContinuousFrames() {
+    return state.viewMode !== 'home' && (
+      state.isPlaying ||
+      state.particles.length > 0 ||
+      Object.keys(state.wrongKeyFlashes).length > 0 ||
+      editDrag !== null
+    );
+  }
+
+  function requestRender() {
+    needsRender = true;
+    if (rafId === null && state.viewMode !== 'home') {
+      lastTimeMs = performance.now();
+      rafId = requestAnimationFrame(tickLoop);
+    }
+  }
 
   function syncViewportHeight() {
     const appShell = document.getElementById('appShell');
@@ -260,6 +284,34 @@
         state.keyMap[m] = kObj;
       }
     }
+
+    const bgGrad = ctx.createLinearGradient(0, 0, 0, strikeY);
+    bgGrad.addColorStop(0, '#070b14');
+    bgGrad.addColorStop(0.65, '#0b1220');
+    bgGrad.addColorStop(1, '#101a2e');
+
+    function makeVertGrad(y0, y1, stops) {
+      const g = ctx.createLinearGradient(0, y0, 0, y1);
+      for (let s = 0; s < stops.length; s++) {
+        g.addColorStop(stops[s][0], stops[s][1]);
+      }
+      return g;
+    }
+
+    const wkBottom = strikeY + Math.max(10, keyboardH - 4);
+    const bkBottom = strikeY + Math.max(10, blackH);
+    cachedGradients = {
+      bg: bgGrad,
+      whiteIdle: makeVertGrad(strikeY, wkBottom, [[0, '#e2e8f0'], [0.12, '#f8fafc'], [0.92, '#ffffff'], [1, '#cbd5e1']]),
+      whiteL: makeVertGrad(strikeY, wkBottom, [[0, '#bae6fd'], [0.25, '#38bdf8'], [1, '#0284c7']]),
+      whiteR: makeVertGrad(strikeY, wkBottom, [[0, '#bbf7d0'], [0.25, '#4ade80'], [1, '#16a34a']]),
+      whiteWrong: makeVertGrad(strikeY, wkBottom, [[0, '#fecaca'], [0.25, '#ef4444'], [1, '#b91c1c']]),
+      blackIdle: makeVertGrad(strikeY, bkBottom, [[0, '#334155'], [0.15, '#1e293b'], [1, '#090d16']]),
+      blackL: makeVertGrad(strikeY, bkBottom, [[0, '#7dd3fc'], [0.4, '#0284c7'], [1, '#0c4a6e']]),
+      blackR: makeVertGrad(strikeY, bkBottom, [[0, '#86efac'], [0.4, '#16a34a'], [1, '#14532d']]),
+      blackWrong: makeVertGrad(strikeY, bkBottom, [[0, '#f87171'], [0.35, '#dc2626'], [1, '#7f1d1d']])
+    };
+    requestRender();
   }
 
   function drawRoundedRect(c, x, y, w, h, r) {
@@ -314,9 +366,6 @@
     }
   }
 
-  let editDrag = null;
-  let lastEmptyRunwayTap = { timeMs: 0, x: 0, y: 0 };
-
   function getRunwayTiming() {
     const horizonReal = state.horizonSec;
     const speedFactor = (state.viewMode === 'edit') ? 1.0 : Math.max(0.25, state.speed || 1.0);
@@ -330,11 +379,15 @@
     ctx.clearRect(0, 0, width, height);
 
     // 1. Deep Runway Background
-    const bgGrad = ctx.createLinearGradient(0, 0, 0, strikeY);
-    bgGrad.addColorStop(0, '#070b14');
-    bgGrad.addColorStop(0.65, '#0b1220');
-    bgGrad.addColorStop(1, '#101a2e');
-    ctx.fillStyle = bgGrad;
+    if (cachedGradients && cachedGradients.bg) {
+      ctx.fillStyle = cachedGradients.bg;
+    } else {
+      const bgGrad = ctx.createLinearGradient(0, 0, 0, strikeY);
+      bgGrad.addColorStop(0, '#070b14');
+      bgGrad.addColorStop(0.65, '#0b1220');
+      bgGrad.addColorStop(1, '#101a2e');
+      ctx.fillStyle = bgGrad;
+    }
     ctx.fillRect(0, 0, width, strikeY);
 
     // 2. Vertical Key Lane Guides
@@ -523,27 +576,29 @@
         barGrad.addColorStop(0, '#7dd3fc');
         barGrad.addColorStop(0.3, '#2997ff');
         barGrad.addColorStop(1, '#0284c7');
-        ctx.shadowColor = hittingNow ? 'rgba(56, 189, 248, 0.95)' : 'rgba(41, 151, 255, 0.42)';
       } else {
         barGrad.addColorStop(0, '#86efac');
         barGrad.addColorStop(0.3, '#34d399');
         barGrad.addColorStop(1, '#16a34a');
-        ctx.shadowColor = hittingNow ? 'rgba(74, 222, 128, 0.95)' : 'rgba(52, 211, 153, 0.42)';
       }
-      ctx.shadowBlur = hittingNow ? 16 : 9;
-
-      drawRoundedRect(ctx, x, topY, w, barH, rad);
-      ctx.fillStyle = barGrad;
-      ctx.fill();
 
       const isInGroup = (state.viewMode === 'edit' && state.selectedNoteIndices && state.selectedNoteIndices.has(i));
       const isSelectedInEdit = (state.viewMode === 'edit' && (i === state.selectedNoteIndex || isInGroup));
       if (isInGroup) {
         ctx.shadowColor = '#38bdf8';
+        ctx.shadowBlur = 10;
+      } else if (hittingNow) {
+        ctx.shadowColor = (n.hand === 'L') ? 'rgba(56, 189, 248, 0.95)' : 'rgba(74, 222, 128, 0.95)';
         ctx.shadowBlur = 12;
       } else {
         ctx.shadowBlur = 0;
       }
+
+      drawRoundedRect(ctx, x, topY, w, barH, rad);
+      ctx.fillStyle = barGrad;
+      ctx.fill();
+      ctx.shadowBlur = 0;
+
       ctx.lineWidth = isSelectedInEdit ? 2.5 : (isWaiting ? 2.2 : 1.2);
       ctx.strokeStyle = isSelectedInEdit
         ? '#ffffff'
@@ -771,28 +826,17 @@
 
       ctx.save();
       drawRoundedRect(ctx, kx, ky, kw, kh, 5);
-      const kGrad = ctx.createLinearGradient(kx, ky, kx, ky + kh);
-      if (isWrong) {
-        kGrad.addColorStop(0, '#fecaca');
-        kGrad.addColorStop(0.25, '#ef4444');
-        kGrad.addColorStop(1, '#b91c1c');
-      } else if (act) {
-        if (act.hand === 'L') {
-          kGrad.addColorStop(0, '#bae6fd');
-          kGrad.addColorStop(0.25, '#38bdf8');
-          kGrad.addColorStop(1, '#0284c7');
+      if (cachedGradients) {
+        if (isWrong) {
+          ctx.fillStyle = cachedGradients.whiteWrong;
+        } else if (act) {
+          ctx.fillStyle = (act.hand === 'L') ? cachedGradients.whiteL : cachedGradients.whiteR;
         } else {
-          kGrad.addColorStop(0, '#bbf7d0');
-          kGrad.addColorStop(0.25, '#4ade80');
-          kGrad.addColorStop(1, '#16a34a');
+          ctx.fillStyle = cachedGradients.whiteIdle;
         }
       } else {
-        kGrad.addColorStop(0, '#e2e8f0');
-        kGrad.addColorStop(0.12, '#f8fafc');
-        kGrad.addColorStop(0.92, '#ffffff');
-        kGrad.addColorStop(1, '#cbd5e1');
+        ctx.fillStyle = isWrong ? '#ef4444' : (act ? (act.hand === 'L' ? '#38bdf8' : '#4ade80') : '#f8fafc');
       }
-      ctx.fillStyle = kGrad;
       ctx.fill();
 
       ctx.fillStyle = isWrong ? '#991b1b' : (act ? (act.hand === 'L' ? '#0369a1' : '#15803d') : '#94a3b8');
@@ -826,27 +870,17 @@
 
       ctx.save();
       drawRoundedRect(ctx, kx, ky, kw, kh, 4);
-      const bGrad = ctx.createLinearGradient(kx, ky, kx, ky + kh);
-      if (isWrong) {
-        bGrad.addColorStop(0, '#f87171');
-        bGrad.addColorStop(0.35, '#dc2626');
-        bGrad.addColorStop(1, '#7f1d1d');
-      } else if (act) {
-        if (act.hand === 'L') {
-          bGrad.addColorStop(0, '#7dd3fc');
-          bGrad.addColorStop(0.4, '#0284c7');
-          bGrad.addColorStop(1, '#0c4a6e');
+      if (cachedGradients) {
+        if (isWrong) {
+          ctx.fillStyle = cachedGradients.blackWrong;
+        } else if (act) {
+          ctx.fillStyle = (act.hand === 'L') ? cachedGradients.blackL : cachedGradients.blackR;
         } else {
-          bGrad.addColorStop(0, '#86efac');
-          bGrad.addColorStop(0.4, '#16a34a');
-          bGrad.addColorStop(1, '#14532d');
+          ctx.fillStyle = cachedGradients.blackIdle;
         }
       } else {
-        bGrad.addColorStop(0, '#334155');
-        bGrad.addColorStop(0.15, '#1e293b');
-        bGrad.addColorStop(1, '#090d16');
+        ctx.fillStyle = isWrong ? '#dc2626' : (act ? (act.hand === 'L' ? '#0284c7' : '#16a34a') : '#1e293b');
       }
-      ctx.fillStyle = bGrad;
       ctx.fill();
 
       if (kw >= 10) {
@@ -871,8 +905,6 @@
   /********************************************************************
    * PLAYBACK ENGINE, WAIT MODE & A-B LOOPING
    ********************************************************************/
-  let lastTimeMs = performance.now();
-
   function updateWaitBanner() {
     const banner = document.getElementById('waitBanner');
     const txt = document.getElementById('waitBannerText');
@@ -1060,6 +1092,7 @@
     state.passHadLongWaitStall = false;
     cancelCountIn();
     syncTimelineUI();
+    requestRender();
   }
 
   let countInTimeouts = [];
@@ -1138,6 +1171,7 @@
     }
     document.getElementById('playSvg').style.display = play ? 'none' : 'block';
     document.getElementById('pauseSvg').style.display = play ? 'block' : 'none';
+    requestRender();
   }
 
   function syncTimelineUI() {
@@ -1173,11 +1207,12 @@
   }
 
   function tickLoop(now) {
+    rafId = null;
     const dt = Math.min(0.05, Math.max(0.001, (now - lastTimeMs) / 1000));
     lastTimeMs = now;
 
     if (state.viewMode === 'home') {
-      requestAnimationFrame(tickLoop);
+      needsRender = false;
       return;
     }
 
@@ -1185,7 +1220,10 @@
     renderFrame(dt);
     updateLiveChordUI();
 
-    requestAnimationFrame(tickLoop);
+    needsRender = false;
+    if (needsContinuousFrames() || needsRender) {
+      rafId = requestAnimationFrame(tickLoop);
+    }
   }
 
   /********************************************************************
@@ -1335,12 +1373,24 @@
   }
 
   let lastChordSymbol = '';
+  let lastActiveChordKey = '';
+  let chordBadgeEl = null;
+  let chordSymbolEl = null;
+  let chordNotesEl = null;
 
   function updateLiveChordUI() {
-    const chordBadge = document.getElementById('chordBadge');
-    if (!chordBadge) return;
+    if (!chordBadgeEl) {
+      chordBadgeEl = document.getElementById('chordBadge');
+      chordSymbolEl = document.getElementById('chordSymbolText');
+      chordNotesEl = document.getElementById('chordNotesText');
+    }
+    if (!chordBadgeEl) return;
     if (!state.showChordDetector || state.viewMode !== 'play') {
-      chordBadge.style.display = 'none';
+      if (lastActiveChordKey !== '') {
+        chordBadgeEl.style.display = 'none';
+        lastActiveChordKey = '';
+        lastChordSymbol = '';
+      }
       return;
     }
 
@@ -1363,30 +1413,38 @@
     }
 
     if (activeMidis.size === 0) {
-      chordBadge.style.display = 'none';
-      lastChordSymbol = '';
+      if (lastActiveChordKey !== '') {
+        chordBadgeEl.style.display = 'none';
+        lastActiveChordKey = '';
+        lastChordSymbol = '';
+      }
       return;
     }
 
-    const chord = detectChordSymbol(Array.from(activeMidis));
+    const sortedMidis = Array.from(activeMidis).sort(function (a, b) { return a - b; });
+    const chordKey = sortedMidis.join(',');
+    if (chordKey === lastActiveChordKey) {
+      return;
+    }
+    lastActiveChordKey = chordKey;
+
+    const chord = detectChordSymbol(sortedMidis);
     if (!chord) {
-      chordBadge.style.display = 'none';
+      chordBadgeEl.style.display = 'none';
       lastChordSymbol = '';
       return;
     }
 
-    const symEl = document.getElementById('chordSymbolText');
-    const notesEl = document.getElementById('chordNotesText');
-    if (symEl) symEl.textContent = chord.symbol;
-    if (notesEl) notesEl.textContent = chord.notes;
+    if (chordSymbolEl) chordSymbolEl.textContent = chord.symbol;
+    if (chordNotesEl) chordNotesEl.textContent = chord.notes;
 
     if (chord.symbol !== lastChordSymbol) {
       lastChordSymbol = chord.symbol;
-      chordBadge.classList.remove('pop');
-      void chordBadge.offsetWidth;
-      chordBadge.classList.add('pop');
+      chordBadgeEl.classList.remove('pop');
+      void chordBadgeEl.offsetWidth;
+      chordBadgeEl.classList.add('pop');
     }
-    chordBadge.style.display = 'flex';
+    chordBadgeEl.style.display = 'flex';
   }
 
   /********************************************************************
@@ -1477,10 +1535,12 @@
       }
       updateWaitBanner();
     }
+    requestRender();
   }
 
   function userNoteOff(midi) {
     delete state.userPressed[midi];
+    requestRender();
   }
 
   function hitTestPiano(x, y) {
@@ -1733,6 +1793,7 @@
       const fNum = parseInt(fBtn.getAttribute('data-finger'), 10);
       fBtn.classList.toggle('active', fNum === curFinger);
     });
+    requestRender();
   }
 
   function setFingerForSelectedNotes(fingerNum) {
@@ -2251,6 +2312,7 @@
         startY: y,
         baseIndices: new Set(state.selectedNoteIndices)
       };
+      requestRender();
       return;
     }
 
@@ -2374,6 +2436,7 @@
         note.duration = Math.round(newDur * 1000) / 1000;
         syncEditorInspectorUI();
       }
+      requestRender();
     }
   });
 
@@ -2402,11 +2465,13 @@
         }
         state.groupDragBox = null;
         syncEditorInspectorUI();
+        requestRender();
         return;
       }
       if (finishedDrag.modified && finishedDrag.noteRef) {
         commitSongEdit(finishedDrag.noteRef);
       }
+      requestRender();
     }
   }
   canvas.addEventListener('pointerup', releasePointer);
@@ -2424,6 +2489,47 @@
   // Computer Keyboard Support & Edit Mode Shortcuts
   const KEY_OFFSETS = { a: 0, w: 1, s: 2, e: 3, d: 4, f: 5, t: 6, g: 7, y: 8, h: 9, u: 10, j: 11, k: 12, o: 13, l: 14 };
   window.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') {
+      let closedOverlay = false;
+      const addM = document.getElementById('addSongModal');
+      if (addM && addM.classList.contains('open')) {
+        if (typeof setAddSongModalOpen === 'function') setAddSongModalOpen(false);
+        else { addM.classList.remove('open'); addM.setAttribute('aria-hidden', 'true'); }
+        closedOverlay = true;
+      }
+      const transM = document.getElementById('transcriberModal');
+      if (transM && transM.classList.contains('open') && (typeof isTranscribing === 'undefined' || !isTranscribing)) {
+        if (typeof setTranscriberModalOpen === 'function') setTranscriberModalOpen(false);
+        else { transM.classList.remove('open'); transM.setAttribute('aria-hidden', 'true'); }
+        closedOverlay = true;
+      }
+      const setPop = document.getElementById('settingsPopover');
+      if (setPop && setPop.classList.contains('open')) {
+        setPop.classList.remove('open');
+        closedOverlay = true;
+      }
+      const moreM = document.getElementById('homeMoreMenu');
+      const moreB = document.getElementById('homeMoreMenuBtn');
+      if (moreM && moreM.classList.contains('open')) {
+        moreM.classList.remove('open');
+        if (moreB) moreB.setAttribute('aria-expanded', 'false');
+        closedOverlay = true;
+      }
+      const edPop = document.getElementById('editorToolsPopover');
+      const edBtn = document.getElementById('editorToolsToggleBtn');
+      if (edPop && edPop.classList.contains('open')) {
+        edPop.classList.remove('open');
+        if (edBtn) {
+          edBtn.classList.remove('active');
+          edBtn.setAttribute('aria-expanded', 'false');
+        }
+        closedOverlay = true;
+      }
+      if (closedOverlay) {
+        e.preventDefault();
+        return;
+      }
+    }
     if (e.target && (e.target.tagName === 'SELECT' || e.target.tagName === 'INPUT')) return;
     if (state.viewMode === 'home') return;
 
@@ -2649,7 +2755,6 @@
   function getSongSourceCategory(songObj) {
     if (!songObj) return 'builtin';
     const src = String(songObj.source || '').toLowerCase();
-    if (src.indexOf('sheet') !== -1 || src.indexOf('musicxml') !== -1 || src.indexOf('mxl') !== -1 || src.indexOf('omr') !== -1) return 'sheet';
     if (src.indexOf('ai') !== -1) return 'ai';
     if (src.indexOf('midi') !== -1) return 'midi';
     if (songObj.isCustom) return 'midi';
@@ -2782,10 +2887,7 @@
       badgesRow.className = 'song-card-badges';
 
       const srcBadge = document.createElement('span');
-      if (cat === 'sheet') {
-        srcBadge.className = 'song-badge sheet';
-        srcBadge.textContent = 'Sheet Music';
-      } else if (cat === 'ai') {
+      if (cat === 'ai') {
         srcBadge.className = 'song-badge ai';
         srcBadge.textContent = 'AI Audio';
       } else if (cat === 'midi') {
@@ -2936,6 +3038,7 @@
       resetNoteTriggersBefore(state.currentTime);
       rebuildKeyboardGeometry();
     }
+    requestRender();
   }
 
   function loadSongById(id) {
@@ -3160,6 +3263,7 @@
     editorSuspectToggleBtn.addEventListener('click', function () {
       state.showSuspectNotes = !state.showSuspectNotes;
       editorSuspectToggleBtn.classList.toggle('active', state.showSuspectNotes);
+      requestRender();
     });
   }
 
@@ -3549,6 +3653,7 @@
     if (speedBtnEl) speedBtnEl.textContent = speedStr;
     if (hudMiniSummary) hudMiniSummary.textContent = speedStr;
     syncLoopUI();
+    requestRender();
   }
 
   const speedBtnEl = document.getElementById('speedBtn');
@@ -3602,6 +3707,7 @@
       state.waitStartedAtMs = null;
       updateWaitBanner();
     }
+    requestRender();
   });
 
   function pruneWaitingNotesForActiveHands() {
@@ -3654,6 +3760,7 @@
       rBtn.className = 'hand-pill hand-pill-r ' + (state.handIsoMaster && state.rightHandOn ? 'active' : 'inactive');
     }
     pruneWaitingNotesForActiveHands();
+    requestRender();
   }
 
   document.getElementById('handIsoSwitch').addEventListener('click', function () {
@@ -3764,6 +3871,7 @@
       document.querySelectorAll('.horizon-opt').forEach(function (b) {
         b.classList.toggle('active', b === btn);
       });
+      requestRender();
     });
   });
 
@@ -3776,6 +3884,7 @@
       if (chordBadge && !state.showChordDetector) {
         chordBadge.style.display = 'none';
       }
+      requestRender();
     });
   }
 
@@ -3784,16 +3893,17 @@
     measureGridSwitch.addEventListener('click', function (e) {
       state.showMeasureGrid = !state.showMeasureGrid;
       e.currentTarget.classList.toggle('active-blue', state.showMeasureGrid);
+      requestRender();
     });
   }
 
   document.getElementById('allKeyLabelsSwitch').addEventListener('click', function (e) {
     state.showAllKeyNames = !state.showAllKeyNames;
     e.currentTarget.classList.toggle('active-blue', state.showAllKeyNames);
+    requestRender();
   });
 
-  // Synced A-B Loop Speed Ramp Controls (Popover Switch + Bottom Bar Pill)
-  const speedRampSwitch = document.getElementById('speedRampSwitch');
+  // A-B Loop Speed Ramp Control (Bottom Bar Pill)
   const loopRampBtn = document.getElementById('loopRampBtn');
 
   function setSpeedRamp(enabled) {
@@ -3819,20 +3929,12 @@
         applyPlaybackSpeed(0.5);
       }
     }
-    if (speedRampSwitch) {
-      speedRampSwitch.classList.toggle('active-green', state.speedRamp);
-    }
     if (loopRampBtn) {
       loopRampBtn.classList.toggle('active', state.speedRamp);
     }
     syncLoopUI();
   }
 
-  if (speedRampSwitch) {
-    speedRampSwitch.addEventListener('click', function () {
-      setSpeedRamp(!state.speedRamp);
-    });
-  }
   if (loopRampBtn) {
     loopRampBtn.addEventListener('click', function () {
       setSpeedRamp(!state.speedRamp);
@@ -4457,5 +4559,11 @@
     }).catch(function () {});
   }
   setTimeout(handleViewportResize, 120);
-  requestAnimationFrame(tickLoop);
+  requestRender();
+  try {
+    if ('serviceWorker' in navigator && typeof location !== 'undefined' &&
+        (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
+      navigator.serviceWorker.register('./sw.js').catch(function () {});
+    }
+  } catch (e) {}
 })(window);

@@ -22,7 +22,7 @@ I built KeyFlow to sit on my piano's music stand on a tablet. Most falling-note 
 ## Practice tools that actually help you learn
 
 * **Wait Mode:** Turn this on and the song pauses right at the strike line until you hit the right keys. No rushing, no falling behind.
-* **Works with your real piano — cables optional:** Plug in a USB or Bluetooth MIDI keyboard, or switch on **Mic Mode** and let your tablet's microphone listen to your acoustic or digital piano.
+* **Works with your real piano — or right on screen:** Plug in a USB or Bluetooth MIDI keyboard, tap directly on the responsive touch piano, or play using your computer keyboard.
 * **Loop the hard parts and build speed:** Mark a tricky 4-bar section with **A–B Loop** and turn on **+5% Speed Ramp**. Start slow, and every time you get through it cleanly, KeyFlow nudges the tempo up until you're playing at full speed.
 * **Live chords, metronome, and count-in:** See the chord name you're playing in real time (`Am`, `Fmaj7`, `G/B`), turn on a soft woodblock metronome, and get a `1–2–3–4` count-in before the notes drop.
 * **Four piano sounds built in:** Practice with an **Acoustic Grand**, switch to a cozy **Mellow Felt Grand** for late-night sessions, or try the **Vintage Upright** and **Electric Piano** — plus a warmth slider to dial in the exact tone you like.
